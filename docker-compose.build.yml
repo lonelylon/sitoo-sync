@@ -1,0 +1,15 @@
+# För den som vill bygga själv från källkoden (t.ex. via SSH):
+#   docker compose -f docker-compose.build.yml up -d --build
+services:
+  sitoo-sync:
+    build: .
+    image: sitoo-sync:local
+    container_name: sitoo-sync
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - sitoo-data:/data
+
+volumes:
+  sitoo-data:
