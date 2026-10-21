@@ -46,10 +46,10 @@ def next_run(job: Job, last_attempt: datetime | None, last_success: datetime | N
              retry_minutes: int) -> datetime | None:
     """När jobbet ska köras nästa gång. None = så snart som möjligt."""
     if last_attempt and (last_success is None or last_attempt > last_success):
-        return last_attempt + timedelta(minutes=min(retry_minutes, job.interval_min))
+        return last_attempt + timedelta(seconds=min(retry_minutes * 60, job.interval_sec))
     if last_success is None:
         return None
-    return last_success + timedelta(minutes=job.interval_min)
+    return last_success + timedelta(seconds=job.interval_sec)
 
 
 def is_due(job: Job, db, retry_minutes: int, now: datetime) -> bool:
@@ -65,7 +65,7 @@ def run_job(job: Job, ctx: Context) -> bool:
     started = utcnow()
     calls_before = ctx.api.request_count
     ctx.db.mark_attempt(entity)
-    log.info("Startar %s", job.name)
+    log.log(logging.DEBUG if job.quiet else logging.INFO, "Startar %s", job.name)
     try:
         rows = job.run(ctx)
     except Exception as err:  # noqa: BLE001
@@ -82,6 +82,10 @@ def run_job(job: Job, ctx: Context) -> bool:
     ctx.db.mark_success(entity)
     seconds = (utcnow() - started).total_seconds()
     calls = ctx.api.request_count - calls_before
+    if job.quiet and not rows:
+        # Täta jobb utan ny data loggas inte i SyncLog, annars växer tabellen i onödan.
+        log.debug("Klar: %s (inga nya rader, %s API-anrop)", job.name, calls)
+        return True
     ctx.db.log_run(job.name, started, "ok", rows, f"{calls} API-anrop, {seconds:.0f} s")
     log.info("Klar: %s (%s rader, %s API-anrop, %.0f s)", job.name, rows, calls, seconds)
     return True
@@ -120,7 +124,7 @@ class SyncWorker(threading.Thread):
     def __init__(self, store: SettingsStore,
                  db_factory: Callable = Database.from_config,
                  api_factory: Callable | None = None,
-                 tick_seconds: float = 30.0):
+                 tick_seconds: float = 5.0):
         super().__init__(name="sync-worker", daemon=True)
         self.store = store
         self.db_factory = db_factory
@@ -135,6 +139,7 @@ class SyncWorker(threading.Thread):
         self._req_lock = threading.Lock()
         self._loaded_version = -1
         self._ctx: Context | None = None
+        self._live_running = False
 
     # -------------------------------------------------- styrning från webben
     def request_run(self, job_name: str) -> None:
@@ -195,12 +200,13 @@ class SyncWorker(threading.Thread):
         log.info("Ansluter till %s på %s:%s", cfg.db_name, cfg.db_server, cfg.db_port)
         db.ensure_database()
         db.apply_schema()
-        self._ctx = Context(cfg=cfg, api=self.api_factory(cfg), db=db)
-        self.status.jobs = build_jobs(cfg)
+        self._ctx = Context(cfg=cfg, api=self.api_factory(cfg), db=db, checkpoint=self._checkpoint)
+        # Täta jobb (nya ordrar) först i varje varv
+        self.status.jobs = sorted(build_jobs(cfg), key=lambda j: not j.quiet)
         self.status.error = None
         self._loaded_version = self.store.version
         log.info("Synken är redo. Siter %s. Jobb: %s", cfg.site_ids,
-                 ", ".join(f"{j.name} ({j.interval_min} min)" for j in self.status.jobs))
+                 ", ".join(f"{j.name} ({j.interval_sec} s)" for j in self.status.jobs))
         return True
 
     def _tick(self) -> None:
@@ -218,19 +224,43 @@ class SyncWorker(threading.Thread):
         for job in self.status.jobs:
             if self._stop_event.is_set() or self._loaded_version != self.store.version:
                 return
-            with self._req_lock:
-                forced = job.name in self._requested
-            if not forced and self.store.paused:
-                continue
-            if forced or is_due(job, ctx.db, ctx.cfg.retry_after_error_minutes, utcnow()):
-                with self._req_lock:
-                    self._requested.discard(job.name)
-                self.status.state = "kör"
-                self.status.current_job = job.name
-                self.status.current_started = utcnow()
-                try:
-                    run_job(job, ctx)
-                finally:
-                    self.status.current_job = None
-                    self.status.current_started = None
+            self._run_if_due(job, ctx)
         self.status.state = "pausad" if self.store.paused else "väntar"
+
+    def _run_if_due(self, job: Job, ctx: Context) -> bool:
+        with self._req_lock:
+            forced = job.name in self._requested
+        if not forced and self.store.paused:
+            return False
+        if not forced and not is_due(job, ctx.db, ctx.cfg.retry_after_error_minutes, utcnow()):
+            return False
+        with self._req_lock:
+            self._requested.discard(job.name)
+        previous = (self.status.current_job, self.status.current_started)
+        self.status.state = "kör"
+        self.status.current_job = job.name
+        self.status.current_started = utcnow()
+        try:
+            run_job(job, ctx)
+        finally:
+            self.status.current_job, self.status.current_started = previous
+        return True
+
+    def _checkpoint(self) -> None:
+        """Anropas mellan sidorna i långa jobb: kör de täta jobben (nya ordrar) om de är på tur.
+
+        Sitoo tillåter bara ett anrop åt gången, så de täta jobben körs i samma tråd
+        och det långa jobbet fortsätter efteråt där det var.
+        """
+        if self._live_running or self._ctx is None or self._stop_event.is_set():
+            return
+        if self._loaded_version != self.store.version:
+            return
+        current = self.status.current_job
+        self._live_running = True
+        try:
+            for job in self.status.jobs:
+                if job.quiet and job.name != current:
+                    self._run_if_due(job, self._ctx)
+        finally:
+            self._live_running = False

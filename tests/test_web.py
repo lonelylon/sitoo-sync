@@ -38,7 +38,8 @@ class SettingsTests(unittest.TestCase):
         cfg = self.store.config()
         self.assertEqual(cfg.site_ids, [1])
         self.assertEqual(cfg.db_port, 1433)
-        self.assertEqual(cfg.intervals.orders, 15)
+        self.assertEqual(cfg.intervals.orders, 60)
+        self.assertEqual(cfg.intervals.products, 900)
 
     def test_persisted_and_secret_kept_when_blank(self):
         self.store.update(COMPLETE)
@@ -144,6 +145,30 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(len(self.db.tables["Users"]), 45)
         self.assertNotIn("Products", self.db.tables)
         self.assertEqual(self.worker.requested(), set())
+
+    def test_orders_run_between_pages_of_long_job(self):
+        self.worker._tick()                      # allt körs en gång
+        # Ordrar är på tur igen och en ny order finns
+        earlier = datetime.now(timezone.utc) - timedelta(minutes=5)
+        self.db.state["job:orders"]["attempt"] = earlier
+        self.db.state["job:orders"]["success"] = earlier
+        self.fake.orders.append({"orderid": 700, "eshopid": 1, "orderdate": 1_800_000_000})
+        self.fake.requests.clear()
+        products = next(j for j in self.worker.status.jobs if j.name == "products")
+        self.db.state.pop("products:1", None)    # tvinga full hämtning: 3 sidor
+        self.worker.request_run("products")
+        self.assertTrue(self.worker._run_if_due(products, self.worker._ctx))
+        paths = [r[0].rsplit("/", 1)[-1] for r in self.fake.requests]
+        first_products = paths.index("products.json")
+        self.assertIn("orders", paths[first_products:])
+        self.assertEqual(paths.count("orders"), 1)
+        self.assertEqual(paths[-1], "products.json")   # produktjobbet fortsatte efteråt
+        self.assertIn(700, self.db.tables["Orders"])
+        self.assertIsNone(self.worker.status.current_job)
+
+    def test_orders_first_in_job_order(self):
+        self.worker._tick()
+        self.assertEqual(self.worker.status.jobs[0].name, "orders")
 
     def test_not_configured(self):
         store = SettingsStore(tempfile.mkdtemp())

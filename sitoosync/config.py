@@ -52,7 +52,8 @@ FIELDS: list[Field] = [
     Field("interval_products_deleted", "INTERVAL_PRODUCTS_DELETED_MIN", "Kontroll av borttagna produkter", "int",
           1440, "schedule"),
     Field("interval_stock", "INTERVAL_STOCK_MIN", "Lagersaldo", "int", 15, "schedule"),
-    Field("interval_orders", "INTERVAL_ORDERS_MIN", "Nya ordrar", "int", 15, "schedule"),
+    Field("interval_orders_sec", "INTERVAL_ORDERS_SEC", "Nya ordrar (sekunder)", "int", 60, "schedule",
+          help="Hur ofta nya ordrar hämtas. Minst 15 sekunder"),
     Field("interval_orders_refresh", "INTERVAL_ORDERS_REFRESH_MIN", "Uppdatera senaste ordrarna", "int", 360,
           "schedule"),
     Field("interval_zreports", "INTERVAL_ZREPORTS_MIN", "Z-rapporter", "int", 60, "schedule"),
@@ -61,6 +62,8 @@ FIELDS: list[Field] = [
     Field("orders_from_date", "ORDERS_FROM_DATE", "Hämta ordrar från datum", "date", "", "other",
           help="Gäller första hämtningen. Tomt = all historik. Format ÅÅÅÅ-MM-DD"),
     Field("orders_refresh_days", "ORDERS_REFRESH_DAYS", "Dagar bakåt som ordrar uppdateras", "int", 3, "other"),
+    Field("enrich_orders", "ENRICH_ORDERS", "Komplettera vid nya ordrar", "bool", True, "other",
+          help="Uppdaterar lagersaldo för sålda artiklar och hämtar produkter, personal och lager som saknas"),
     Field("page_size", "PAGE_SIZE", "Poster per API-anrop", "int", 100, "other"),
     Field("log_level", "LOG_LEVEL", "Loggnivå", "str", "INFO", "other", help="INFO eller DEBUG"),
 ]
@@ -117,17 +120,25 @@ def missing_required(values: dict) -> list[str]:
     return [f.label for f in FIELDS if f.required and (values.get(f.key) in (None, ""))]
 
 
+MIN_ORDER_SECONDS = 15
+
+
+def _orders_seconds(value: int) -> int:
+    """0 stänger av; annars minst MIN_ORDER_SECONDS för att inte belasta Sitoo i onödan."""
+    return 0 if value == 0 else max(MIN_ORDER_SECONDS, value)
+
+
 @dataclass
 class Intervals:
-    """Minuter mellan körningar per jobb. 0 = jobbet är avstängt."""
-    stores_warehouses: int = 60
-    products: int = 15
-    products_deleted: int = 1440
-    stock: int = 15
-    orders: int = 15
-    orders_refresh: int = 360
-    zreports: int = 60
-    users: int = 360
+    """Sekunder mellan körningar per jobb. 0 = jobbet är avstängt."""
+    stores_warehouses: int = 3600
+    products: int = 900
+    products_deleted: int = 86400
+    stock: int = 900
+    orders: int = 60
+    orders_refresh: int = 21600
+    zreports: int = 3600
+    users: int = 21600
 
 
 @dataclass
@@ -152,6 +163,7 @@ class Config:
     overlap_seconds: int = 300
     retry_after_error_minutes: int = 10
     log_level: str = "INFO"
+    enrich_orders: bool = True
     intervals: Intervals = field(default_factory=Intervals)
 
     @staticmethod
@@ -179,14 +191,15 @@ class Config:
             orders_refresh_days=int(v["orders_refresh_days"]),
             orders_from_date=str(v["orders_from_date"]) or None,
             log_level=str(v["log_level"]),
+            enrich_orders=bool(v["enrich_orders"]),
             intervals=Intervals(
-                stores_warehouses=int(v["interval_stores"]),
-                products=int(v["interval_products"]),
-                products_deleted=int(v["interval_products_deleted"]),
-                stock=int(v["interval_stock"]),
-                orders=int(v["interval_orders"]),
-                orders_refresh=int(v["interval_orders_refresh"]),
-                zreports=int(v["interval_zreports"]),
-                users=int(v["interval_users"]),
+                stores_warehouses=int(v["interval_stores"]) * 60,
+                products=int(v["interval_products"]) * 60,
+                products_deleted=int(v["interval_products_deleted"]) * 60,
+                stock=int(v["interval_stock"]) * 60,
+                orders=_orders_seconds(int(v["interval_orders_sec"])),
+                orders_refresh=int(v["interval_orders_refresh"]) * 60,
+                zreports=int(v["interval_zreports"]) * 60,
+                users=int(v["interval_users"]) * 60,
             ),
         )

@@ -8,7 +8,7 @@ Hämtar data från Sitoos REST API och sparar den i SQL Server. Tjänsten körs 
 | Lager | `sitoo.Warehouses` | Allt, varje timme |
 | Produkter och varianter | `sitoo.Products` | Ändrade var 15:e minut. Borttagna markeras med `IsDeleted = 1` en gång per dygn |
 | Lagersaldo | `sitoo.StockItems` | Ändrade per lager, var 15:e minut |
-| Ordrar/kvitton | `sitoo.Orders`, `sitoo.OrderItems`, `sitoo.OrderPayments` | Nya var 15:e minut. Senaste 3 dagarnas ordrar uppdateras var 6:e timme |
+| Ordrar/kvitton | `sitoo.Orders`, `sitoo.OrderItems`, `sitoo.OrderPayments` | Nya varje minut (går att sätta ner till 15 sekunder). Senaste 3 dagarnas ordrar uppdateras var 6:e timme |
 | Z-rapporter | `sitoo.ZReports`, `sitoo.ZReportPayments`, `sitoo.ZReportVatGroups`, `sitoo.ZReportProductGroups` | Nya, varje timme |
 | Personer | `sitoo.Users` | Allt, var 6:e timme |
 
@@ -55,6 +55,30 @@ Porten 8095 valdes eftersom QNAP själv använder 8080 och 443. Är 8095 också 
 Den första körningen hämtar all historik och kan ta lång tid om ni har många ordrar. Vill du bara ha ordrar från ett visst datum fyller du i **Hämta ordrar från datum** innan du sparar.
 
 ---
+
+## Ordrar nästan live
+
+Nya ordrar hämtas varje minut som standard. Intervallet ställs in under **Inställningar > Schema > Nya ordrar (sekunder)**, och lägsta värdet är 15 sekunder. När inget nytt finns kostar en kontroll bara ett API-anrop.
+
+- **Ordrar går först.** Om ett längre jobb pågår, till exempel en full produkthämtning, pausar det mellan sidorna så att nya ordrar hämtas i tid. Sedan fortsätter det där det var.
+- **Komplettering vid nya ordrar.** Direkt efter att nya ordrar sparats uppdateras lagersaldot för de artiklar som sålts, i det lager ordern gjordes. Samtidigt hämtas produkter, personal (`userid_staff`) och lager som ordrarna pekar på men som saknas i databasen. Det kan stängas av med **Komplettera vid nya ordrar**. Den första hämtningen av all historik kompletteras inte, eftersom de vanliga jobben ändå hämtar allt.
+- **Om något går fel** i kompletteringen sparas ordrarna ändå, och de vanliga jobben för produkter, lagersaldo och personer fångar upp det som missades vid nästa körning.
+- **Kunder:** en order innehåller kundens namn, e-post och personnummer direkt, men inget id till en person i Sitoo. Därför hämtas inga kunder automatiskt. Alla personer kommer med via jobbet för personer.
+- **Loggen:** orderkontroller som inte hittar något nytt skrivs inte till `sitoo.SyncLog`, så tabellen inte växer i onödan.
+
+### Grafana
+
+Lägg till SQL Server som datakälla i Grafana med inloggningen `sitoosync`, eller en egen inloggning med bara läsrättigheter (`db_datareader`). Använd `OrderDateUtc` som tidskolumn. Tiderna lagras i UTC, och Grafana visar dem i webbläsarens tidszon. Exempel på försäljning per timme:
+
+```sql
+SELECT
+  DATEADD(HOUR, DATEDIFF(HOUR, 0, OrderDateUtc), 0) AS time,
+  SUM(MoneyFinalNet) AS Forsaljning_exkl_moms
+FROM sitoo.Orders
+WHERE $__timeFilter(OrderDateUtc)
+GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, OrderDateUtc), 0)
+ORDER BY 1
+```
 
 ## Webbgränssnittet
 

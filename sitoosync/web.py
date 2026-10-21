@@ -71,22 +71,29 @@ def _ord(n: int) -> str:
     return f"{n}:a" if n % 10 in (1, 2) and n % 100 not in (11, 12) else f"{n}:e"
 
 
-def fmt_interval(minutes: int) -> str:
+def fmt_interval(seconds: int) -> str:
+    if seconds < 60:
+        return f"var {seconds}:e sekund"
+    if seconds % 60:
+        return f"var {seconds} s"
+    minutes = seconds // 60
     if minutes % 1440 == 0:
         days = minutes // 1440
         return "varje dygn" if days == 1 else f"var {_ord(days)} dygn"
     if minutes % 60 == 0:
         hours = minutes // 60
         return "varje timme" if hours == 1 else f"var {_ord(hours)} timme"
-    return f"var {minutes} min"
+    return "varje minut" if minutes == 1 else f"var {minutes} min"
 
 
 def fmt_relative(dt: datetime | None, now: datetime) -> str:
     if dt is None:
         return "nu"
     seconds = (dt - now).total_seconds()
-    if seconds <= 60:
+    if seconds <= 2:
         return "nu"
+    if seconds < 60:
+        return f"om {int(seconds)} s"
     minutes = int(seconds // 60)
     if minutes < 60:
         return f"om {minutes} min"
@@ -512,7 +519,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             rows_html.append(
                 f'<tr><td><b>{esc(JOB_LABELS.get(job.name, job.name))}</b>{err_html}</td>'
                 f'<td>{state}</td>'
-                f'<td class="hide-sm">{esc(fmt_interval(job.interval_min))}</td>'
+                f'<td class="hide-sm">{esc(fmt_interval(job.interval_sec))}</td>'
                 f'<td>{esc(fmt_time(success))}</td>'
                 f'<td>{esc(nxt)}</td>'
                 f'<td class="num hide-sm">{"" if rows is None else f"{rows:,}".replace(",", " ")}</td>'

@@ -1,6 +1,7 @@
 """Databaslager mot SQL Server (pymssql)."""
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -191,6 +192,26 @@ class Database:
                                                  "Lägg till den i rollen db_owner."])
             lines.append(f"Databasen {self.database} finns och användaren har rätt behörighet.")
         return True, "\n".join(lines)
+
+    _EXISTING_SQL = {
+        "products": ("SELECT ProductId FROM sitoo.Products WHERE SiteId = %s AND ProductId IN "
+                     "(SELECT TRY_CONVERT(INT, [value]) FROM OPENJSON(%s))", int),
+        "warehouses": ("SELECT WarehouseId FROM sitoo.Warehouses WHERE SiteId = %s AND WarehouseId IN "
+                       "(SELECT TRY_CONVERT(INT, [value]) FROM OPENJSON(%s))", int),
+        "users": ("SELECT UserId FROM sitoo.Users WHERE UserId IN "
+                  "(SELECT CAST([value] AS NVARCHAR(64)) FROM OPENJSON(%s))", str),
+    }
+
+    def existing_ids(self, kind: str, ids: list, site: int | None = None) -> set:
+        """Vilka av ids som redan finns i databasen (products, warehouses eller users)."""
+        if not ids:
+            return set()
+        sql, cast = self._EXISTING_SQL[kind]
+        payload = json.dumps(list(ids), ensure_ascii=False)
+        args = (payload,) if kind == "users" else (site, payload)
+        cur = self.conn.cursor()
+        cur.execute(sql, args)
+        return {cast(r[0]) for r in cur.fetchall()}
 
     # ------------------------------------------------------------ webbgränssnitt
     def job_overview(self) -> dict[str, dict]:

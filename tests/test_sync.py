@@ -63,6 +63,9 @@ class FakeSitoo:
             items = self.products
             if "datelastmodified" in q:
                 items = [x for x in items if x["datemodified"] > int(q["datelastmodified"])]
+            if "productid" in q:
+                wanted = {int(x) for x in q["productid"].split(",")}
+                items = [x for x in items if x["productid"] in wanted]
             if q.get("fields") == "productid":
                 items = [{"productid": x["productid"]} for x in items]
             return env(items)
@@ -72,9 +75,14 @@ class FakeSitoo:
             return env(self.warehouses)
         if p.startswith("/sites/1/warehouses/") and p.endswith("/warehouseitems.json"):
             wid = int(p.split("/")[4])
+            if wid not in self.stock:
+                return 404, {}, {"statuscode": 404, "errortext": "warehouse not found"}
             items = self.stock[wid]
             if "datelastmodifiedfrom" in q:
                 items = [x for x in items if x["datelastmodified"] >= int(q["datelastmodifiedfrom"])]
+            if "sku" in q:
+                wanted = set(q["sku"].split(","))
+                items = [x for x in items if x["sku"] in wanted]
             return env(items)
         if p == "/orders":
             items = sorted(self.orders, key=lambda o: o["orderid"])
@@ -87,7 +95,11 @@ class FakeSitoo:
             items = [z for z in self.zreports if z["dateadded"] >= int(q.get("dateaddedfrom", 0))]
             return 200, {}, items[:500]
         if p == "/sites/1/users.json":
-            return env(self.users)
+            items = self.users
+            if "userid" in q:
+                wanted = set(q["userid"].split(","))
+                items = [x for x in items if x["userid"] in wanted]
+            return env(items)
         return 404, {}, {"statuscode": 404, "errortext": "not found"}
 
 
@@ -158,6 +170,12 @@ class FakeDb:
     def get_state(self, e):
         s = self.state.get(e)
         return (s["value"], s["success"]) if s else (None, None)
+
+    def existing_ids(self, kind, ids, site=None):
+        t = self.tables.get({"products": "Products", "users": "Users", "warehouses": "Warehouses"}[kind], {})
+        if kind == "users":
+            return {i for i in ids if i in t}
+        return {i for i in ids if (site, i) in t}
 
     def get_last_attempt(self, e):
         s = self.state.get(e)
@@ -348,7 +366,7 @@ class SyncTests(unittest.TestCase):
         self.assertTrue(is_due(job, self.db, 10, now + timedelta(minutes=11)))
 
     def test_scheduler_due_logic(self):
-        job = J.Job("x", 15, lambda c: 0)
+        job = J.Job("x", 15 * 60, lambda c: 0)
         now = datetime.now(timezone.utc)
         self.assertTrue(is_due(job, self.db, 10, now))
         self.assertTrue(run_job(job, self.ctx))
@@ -361,6 +379,101 @@ class SyncTests(unittest.TestCase):
         self.assertNotIn("users", names)
         self.assertNotIn("zreports", names)
         self.assertIn("orders", names)
+
+
+class EnrichTests(unittest.TestCase):
+    """Komplettering när nya ordrar kommer in."""
+
+    setUp = SyncTests.setUp
+    tearDown = SyncTests.tearDown
+
+    def _first_load(self):
+        J.sync_stores_and_warehouses(self.ctx)
+        J.sync_products(self.ctx)
+        J.sync_users(self.ctx)
+        J.sync_orders(self.ctx)        # första hämtningen kompletteras inte
+        self.fake.requests.clear()
+        self.db.calls.clear()
+
+    def _new_order(self, **kw):
+        order = {"orderid": 500, "eshopid": 1, "orderdate": 1_800_000_000, "warehouseid": 10,
+                 "userid_staff": "{U1}",
+                 "orderitems": [{"productid": 3, "sku": "SKU3", "quantity": 1}]}
+        order.update(kw)
+        self.fake.orders.append(order)
+        return order
+
+    def test_first_load_is_not_enriched(self):
+        J.sync_orders(self.ctx)
+        paths = {r[0].rsplit("/", 1)[-1] for r in self.fake.requests}
+        self.assertEqual(paths, {"orders"})
+
+    def test_sold_stock_refreshed(self):
+        self._first_load()
+        self.fake.stock[10].append({"warehouseitemid": 99, "sku": "SKU3", "decimaltotal": "4.000",
+                                    "datelastmodified": 1_800_000_000})
+        self._new_order()
+        J.sync_orders(self.ctx)
+        stock_calls = [r for r in self.fake.requests if "warehouseitems" in r[0]]
+        self.assertEqual(len(stock_calls), 1)
+        self.assertEqual(stock_calls[0][1]["sku"], "SKU3")
+        self.assertIn("/warehouses/10/", stock_calls[0][0])
+        self.assertEqual(self.db.tables["StockItems"][(1, 10, "SKU3")]["decimaltotal"], "4.000")
+
+    def test_existing_product_and_staff_not_refetched(self):
+        self._first_load()
+        self._new_order()
+        J.sync_orders(self.ctx)
+        self.assertFalse([r for r in self.fake.requests if r[0].endswith("products.json")])
+        self.assertFalse([r for r in self.fake.requests if r[0].endswith("users.json")])
+
+    def test_missing_product_and_staff_fetched(self):
+        self._first_load()
+        self.fake.products.append({"productid": 999, "sku": "NY1", "title": "Ny produkt", "datemodified": 1})
+        self.fake.users.append({"userid": "{PERSONAL}", "email": "kassa@ex.se", "role": 40})
+        self._new_order(userid_staff="{PERSONAL}",
+                        orderitems=[{"productid": 999, "sku": "NY1"}, {"productid": 3, "sku": "SKU3"}])
+        J.sync_orders(self.ctx)
+        product_calls = [r for r in self.fake.requests if r[0].endswith("products.json")]
+        self.assertEqual([c[1]["productid"] for c in product_calls], ["999"])
+        self.assertIn((1, 999), self.db.tables["Products"])
+        user_calls = [r for r in self.fake.requests if r[0].endswith("users.json")]
+        self.assertEqual([c[1]["userid"] for c in user_calls], ["{PERSONAL}"])
+        self.assertIn("{PERSONAL}", self.db.tables["Users"])
+
+    def test_unknown_warehouse_refreshes_stores(self):
+        self._first_load()
+        self.fake.warehouses.append({"warehouseid": 12, "name": "Nytt lager"})
+        self.fake.stock[12] = []
+        self._new_order(warehouseid=12)
+        J.sync_orders(self.ctx)
+        self.assertIn((1, 12), self.db.tables["Warehouses"])
+
+    def test_enrich_failure_does_not_fail_orders(self):
+        self._first_load()
+        self.fake.users.append({"userid": "{PERSONAL}", "email": "kassa@ex.se"})
+        self._new_order(warehouseid=77, userid_staff="{PERSONAL}")
+        J.sync_orders(self.ctx)          # får inte kasta
+        self.assertIn(500, self.db.tables["Orders"])
+        self.assertEqual(self.db.get_state("orders:1")[0], 500)
+        self.assertIn("{PERSONAL}", self.db.tables["Users"])   # övriga steg körs ändå
+
+    def test_enrich_can_be_disabled(self):
+        self._first_load()
+        self.ctx.cfg.enrich_orders = False
+        self._new_order()
+        J.sync_orders(self.ctx)
+        self.assertEqual({r[0].rsplit("/", 1)[-1] for r in self.fake.requests}, {"orders"})
+
+    def test_quiet_job_without_rows_not_logged(self):
+        J.sync_orders(self.ctx)
+        job = J.Job("orders", 60, J.sync_orders, quiet=True)
+        self.db.logs.clear()
+        self.assertTrue(run_job(job, self.ctx))
+        self.assertEqual(self.db.logs, [])
+        self._new_order()
+        self.assertTrue(run_job(job, self.ctx))
+        self.assertEqual(len(self.db.logs), 1)
 
 
 class SchemaTests(unittest.TestCase):
