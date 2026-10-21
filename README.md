@@ -43,12 +43,14 @@ GO
 
 ### 3. Gör inställningarna i webbläsaren
 
-1. Öppna `http://<QNAP:ens IP-adress>:8080`.
+1. Öppna `http://<QNAP:ens IP-adress>:8095`.
 2. Välj ett lösenord för webbgränssnittet.
 3. Fyll i uppgifterna för Sitoo och SQL Server. Som server anger du QNAP:ens IP-adress och den port som SQL Server-containern publicerar (oftast 1433).
 4. Klicka **Testa anslutning** för Sitoo och för databasen, och sedan **Spara inställningar**.
 
 Synken startar direkt och syns under **Översikt**.
+
+Porten 8095 valdes eftersom QNAP själv använder 8080 och 443. Är 8095 också upptagen ändrar du den första siffran i `ports` i compose-filen, till exempel `"8096:8080"`, och öppnar den porten i stället. Den andra siffran ska alltid vara 8080.
 
 Den första körningen hämtar all historik och kan ta lång tid om ni har många ordrar. Vill du bara ha ordrar från ett visst datum fyller du i **Hämta ordrar från datum** innan du sparar.
 

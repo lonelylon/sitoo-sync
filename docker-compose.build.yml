@@ -7,7 +7,7 @@ services:
     container_name: sitoo-sync
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8095:8080"
     volumes:
       - sitoo-data:/data
 
