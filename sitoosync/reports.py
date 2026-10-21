@@ -417,6 +417,13 @@ class Reports:
         self.db.execute("INSERT sitoo.TimeStampAdd (Namn, Stampling, Kommentar) VALUES (%s, %s, %s)",
                         (name, at, comment or None))
 
+    def all_manual_stamps(self) -> list[dict]:
+        return self.db.query("SELECT Id, Namn, Stampling, Kommentar FROM sitoo.TimeStampAdd ORDER BY Stampling DESC")
+
+    def update_manual_stamp(self, stamp_id: int, name: str, at: datetime, comment: str | None) -> None:
+        self.db.execute("UPDATE sitoo.TimeStampAdd SET Namn = %s, Stampling = %s, Kommentar = %s WHERE Id = %s",
+                        (name, at, comment or None, stamp_id))
+
     def delete_manual_stamp(self, stamp_id: int) -> None:
         self.db.execute("DELETE FROM sitoo.TimeStampAdd WHERE Id = %s", (stamp_id,))
 

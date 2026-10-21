@@ -432,6 +432,17 @@ class FakeReports:
     def delete_manual_stamp(self, i):
         FakeReports.calls.append(("delete_manual", i))
 
+    def manual_stamps(self, start, end):
+        return [{"Id": 5, "Namn": "Anna Andersson", "Stampling": datetime(2026, 8, 22, 10, 0), "Kommentar": "Glömt"}]
+
+    def all_manual_stamps(self):
+        FakeReports.calls.append(("all_manual",))
+        return self.manual_stamps(None, None) + [
+            {"Id": 1, "Namn": "Bo Berg", "Stampling": datetime(2021, 9, 4, 15, 45), "Kommentar": "Från Excel"}]
+
+    def update_manual_stamp(self, i, name, at, comment):
+        FakeReports.calls.append(("update_manual", i, name, at, comment))
+
     def remove_order_stamp(self, o, c):
         FakeReports.calls.append(("remove", o))
 
@@ -455,7 +466,7 @@ class FakeReports:
         FakeReports.calls.append(("zdate", rid, zid, d))
 
 
-class ReportPageTests(WebBase):
+class ReportBase(WebBase):
     def setUp(self):
         super().setUp()
         self._orig = WR.Reports
@@ -485,6 +496,7 @@ class ReportPageTests(WebBase):
         WR.Reports = self._orig
         super().tearDown()
 
+class ReportPageTests(ReportBase):
     def test_time_page(self):
         status, _, html = self.c.req("GET", "/tid?period=2026-09")
         self.assertEqual(status, 200)
@@ -555,3 +567,47 @@ class ReportPageTests(WebBase):
         FakeReports.zdata[2].pop()      # Swish saknas -> 35 kr diff
         _, _, html = self.c.req("GET", "/bokforing?manad=2026-09")
         self.assertIn("balanserar inte", html)
+
+
+class ManualAndPrintTests(ReportBase):
+    def test_manual_list_and_toggle(self):
+        _, _, html = self.c.req("GET", "/tid?period=2026-09")
+        self.assertIn("Manuella stämplingar", html)
+        self.assertIn('value="Glömt"', html)
+        self.assertIn('value="2026-08-22"', html)
+        self.assertIn("Visa alla manuella stämplingar", html)
+        _, _, html = self.c.req("GET", "/tid?period=2026-09&alla_manuella=1")
+        self.assertIn(("all_manual",), FakeReports.calls)
+        self.assertIn("Från Excel", html)
+        self.assertIn("Visa bara perioden", html)
+
+    def test_manual_update_and_delete(self):
+        csrf = self.c.csrf("/tid?period=2026-09")
+        back = "/tid?period=2026-09"
+        self.c.req("POST", "/tid/manuell", {"csrf": csrf, "back": back, "id": "5", "namn": "Anna Andersson",
+                                            "datum": "2026-08-22", "tid": "10:15", "kommentar": "Rättad",
+                                            "atgard": "spara"})
+        self.assertIn(("update_manual", 5, "Anna Andersson", datetime(2026, 8, 22, 10, 15), "Rättad"),
+                      FakeReports.calls)
+        self.c.req("POST", "/tid/manuell", {"csrf": csrf, "back": back, "id": "5", "atgard": "radera"})
+        self.assertIn(("delete_manual", 5), FakeReports.calls)
+
+    def test_print_pages(self):
+        status, _, html = self.c.req("GET", "/tid/utskrift?period=2026-09")
+        self.assertEqual(status, 200)
+        self.assertIn("@page{size:A4 portrait;margin:12mm}", html)
+        self.assertIn("Tidrapport – löneperiod 2026-09", html)
+        self.assertIn("Attesterad av", html)
+        self.assertNotIn("<header>", html)
+        status, _, html = self.c.req("GET", "/bokforing/utskrift?manad=2026-09")
+        self.assertEqual(status, 200)
+        self.assertIn("@page{size:A4 landscape;margin:10mm}", html)
+        self.assertIn("Bokföringsunderlag 2026-09", html)
+        self.assertIn("Balanserar", html)
+        self.assertIn("19 962,50", html)
+
+    def test_pages_link_to_print(self):
+        _, _, html = self.c.req("GET", "/tid?period=2026-09")
+        self.assertIn('href="/tid/utskrift?period=2026-09&amp;person="', html)
+        _, _, html = self.c.req("GET", "/bokforing?manad=2026-09")
+        self.assertIn('href="/bokforing/utskrift?manad=2026-09"', html)

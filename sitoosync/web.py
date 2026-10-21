@@ -20,7 +20,7 @@ from .config import FIELDS, ConfigError
 from .db import Database
 from .settings import SettingsStore
 from .sitoo import SitooClient, SitooError
-from .web_reports import ReportPagesMixin
+from .web_reports import PrintPagesMixin, ReportPagesMixin
 from .worker import JOB_LABELS, RESET_PATTERNS, LogBuffer, SyncWorker, next_run, utcnow
 
 try:
@@ -244,7 +244,7 @@ class WebApp:
         return server
 
 
-class RequestHandler(ReportPagesMixin, BaseHTTPRequestHandler):
+class RequestHandler(ReportPagesMixin, PrintPagesMixin, BaseHTTPRequestHandler):
     app: WebApp
     server_version = "sitoo-sync"
     sys_version = ""
@@ -340,8 +340,9 @@ class RequestHandler(ReportPagesMixin, BaseHTTPRequestHandler):
         if not self.app.get_session(self._token()):
             return self._redirect("/loggain")
         routes = {"/": self.page_overview, "/installningar": self.page_settings, "/logg": self.page_log,
-                  "/tid": self.page_time, "/tid.csv": self.csv_time,
-                  "/bokforing": self.page_accounting, "/bokforing.csv": self.csv_accounting}
+                  "/tid": self.page_time, "/tid.csv": self.csv_time, "/tid/utskrift": self.print_time,
+                  "/bokforing": self.page_accounting, "/bokforing.csv": self.csv_accounting,
+                  "/bokforing/utskrift": self.print_accounting}
         handler = routes.get(path)
         if handler is None:
             return self._page("Hittades inte", "<h1>Sidan finns inte</h1>", status=404)
