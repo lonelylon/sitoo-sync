@@ -199,6 +199,8 @@ class SyncWorker(threading.Thread):
         db = self.db_factory(cfg)
         log.info("Ansluter till %s på %s:%s", cfg.db_name, cfg.db_server, cfg.db_port)
         db.ensure_database()
+        self.status.state = "uppdaterar databasen"
+        log.info("Uppdaterar databasschemat (första starten efter en uppdatering kan ta några minuter)")
         db.apply_schema()
         self._ctx = Context(cfg=cfg, api=self.api_factory(cfg), db=db, checkpoint=self._checkpoint)
         # Täta jobb (nya ordrar) först i varje varv

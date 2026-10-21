@@ -69,7 +69,7 @@ CREATE TABLE sitoo.Stores (
     Latitude        NVARCHAR(30)   NULL,
     Longitude       NVARCHAR(30)   NULL,
     IsDeleted       BIT            NOT NULL CONSTRAINT DF_Stores_IsDeleted DEFAULT 0,
-    RawJson         NVARCHAR(MAX)  NULL,
+    RawJson         VARBINARY(MAX)  NULL,
     SyncedUtc       DATETIME2(0)   NOT NULL,
     CONSTRAINT PK_Stores PRIMARY KEY (SiteId, StoreId)
 );
@@ -94,7 +94,7 @@ CREATE TABLE sitoo.Warehouses (
     City          NVARCHAR(255) NULL,
     CountryId     NVARCHAR(10)  NULL,
     IsDeleted     BIT           NOT NULL CONSTRAINT DF_Warehouses_IsDeleted DEFAULT 0,
-    RawJson       NVARCHAR(MAX) NULL,
+    RawJson       VARBINARY(MAX) NULL,
     SyncedUtc     DATETIME2(0)  NOT NULL,
     CONSTRAINT PK_Warehouses PRIMARY KEY (SiteId, WarehouseId)
 );
@@ -128,7 +128,7 @@ CREATE TABLE sitoo.Products (
     DateModifiedUtc     DATETIME2(0)  NULL,
     IsDeleted           BIT           NOT NULL CONSTRAINT DF_Products_IsDeleted DEFAULT 0,
     DeletedUtc          DATETIME2(0)  NULL,
-    RawJson             NVARCHAR(MAX) NULL,
+    RawJson             VARBINARY(MAX) NULL,
     SyncedUtc           DATETIME2(0)  NOT NULL,
     CONSTRAINT PK_Products PRIMARY KEY (SiteId, ProductId)
 );
@@ -154,7 +154,7 @@ CREATE TABLE sitoo.StockItems (
     MoneyTotal             DECIMAL(19,2) NULL,
     DateLastModifiedUtc    DATETIME2(0)  NULL,
     DateLastStocktakingUtc DATETIME2(0)  NULL,
-    RawJson                NVARCHAR(MAX) NULL,
+    RawJson                VARBINARY(MAX) NULL,
     SyncedUtc              DATETIME2(0)  NOT NULL,
     CONSTRAINT PK_StockItems PRIMARY KEY (SiteId, WarehouseId, Sku)
 );
@@ -193,7 +193,7 @@ CREATE TABLE sitoo.Orders (
     MoneyTotalGrossRoundoff  DECIMAL(19,2) NULL,
     MoneyTotalGrossAll       DECIMAL(19,2) NULL,
     Comment                  NVARCHAR(MAX) NULL,
-    RawJson                  NVARCHAR(MAX) NULL,
+    RawJson                  VARBINARY(MAX) NULL,
     SyncedUtc                DATETIME2(0)  NOT NULL
 );
 GO
@@ -224,7 +224,6 @@ CREATE TABLE sitoo.OrderItems (
     VoucherId             INT           NULL,
     VoucherCode           NVARCHAR(255) NULL,
     VoucherName           NVARCHAR(255) NULL,
-    RawJson               NVARCHAR(MAX) NULL,
     CONSTRAINT PK_OrderItems PRIMARY KEY (OrderId, LineNumber)
 );
 GO
@@ -238,7 +237,6 @@ CREATE TABLE sitoo.OrderPayments (
     LineNumber  INT           NOT NULL,
     Name        NVARCHAR(255) NULL,
     MoneyAmount DECIMAL(19,2) NULL,
-    RawJson     NVARCHAR(MAX) NULL,
     CONSTRAINT PK_OrderPayments PRIMARY KEY (OrderId, LineNumber)
 );
 GO
@@ -279,7 +277,7 @@ CREATE TABLE sitoo.ZReports (
     MoneyGrandTotalSales    DECIMAL(19,2) NULL,
     MoneyGrandTotalRefund   DECIMAL(19,2) NULL,
     MoneyGrandTotalNet      DECIMAL(19,2) NULL,
-    RawJson                 NVARCHAR(MAX) NULL,
+    RawJson                 VARBINARY(MAX) NULL,
     SyncedUtc               DATETIME2(0)  NOT NULL,
     CONSTRAINT PK_ZReports PRIMARY KEY (RegisterId, ZReportId)
 );
@@ -296,7 +294,6 @@ CREATE TABLE sitoo.ZReportPayments (
     LineNumber  INT           NOT NULL,
     Name        NVARCHAR(255) NULL,
     MoneyTotal  DECIMAL(19,2) NULL,
-    RawJson     NVARCHAR(MAX) NULL,
     CONSTRAINT PK_ZReportPayments PRIMARY KEY (RegisterId, ZReportId, Kind, LineNumber)
 );
 GO
@@ -359,9 +356,111 @@ CREATE TABLE sitoo.Users (
     Notes           NVARCHAR(MAX) NULL,
     DateCreatedUtc  DATETIME2(0)  NULL,
     DateModifiedUtc DATETIME2(0)  NULL,
-    RawJson         NVARCHAR(MAX) NULL,
+    RawJson         VARBINARY(MAX) NULL,
     SyncedUtc       DATETIME2(0)  NOT NULL
 );
+GO
+
+------------------------------------------------------------------------------
+-- Enkel återställningsmodell: all data kan hämtas om från Sitoo, så loggfilen
+-- behöver inte sparas för punktåterställning. Hindrar att loggen växer utan gräns.
+------------------------------------------------------------------------------
+BEGIN TRY
+    IF (SELECT recovery_model FROM sys.databases WHERE database_id = DB_ID()) <> 3
+        ALTER DATABASE CURRENT SET RECOVERY SIMPLE;
+END TRY
+BEGIN CATCH
+    PRINT 'Kunde inte sätta SIMPLE recovery: ' + ERROR_MESSAGE();
+END CATCH;
+GO
+
+------------------------------------------------------------------------------
+-- RawJson lagras komprimerad (COMPRESS). Läs den med sitoo.Json(RawJson),
+-- t.ex. JSON_VALUE(sitoo.Json(RawJson), '$.customerref').
+------------------------------------------------------------------------------
+CREATE OR ALTER FUNCTION sitoo.Json (@raw VARBINARY(MAX))
+RETURNS NVARCHAR(MAX)
+WITH SCHEMABINDING
+AS
+BEGIN
+    RETURN CAST(DECOMPRESS(@raw) AS NVARCHAR(MAX));
+END;
+GO
+
+-- Gör om en äldre RawJson-kolumn (NVARCHAR) till komprimerad VARBINARY.
+-- Kan avbrytas: nästa start gör om eller slutför det som återstår.
+CREATE OR ALTER PROCEDURE sitoo.MigrateRawJson
+    @Table SYSNAME
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @obj INT = OBJECT_ID(N'sitoo.' + @Table, N'U');
+    IF @obj IS NULL RETURN;
+    DECLARE @old NVARCHAR(400) = N'sitoo.' + @Table + N'.RawJsonZ';
+    -- Avbrutet efter DROP COLUMN men före namnbytet: slutför namnbytet.
+    IF COL_LENGTH(N'sitoo.' + @Table, N'RawJson') IS NULL AND COL_LENGTH(N'sitoo.' + @Table, N'RawJsonZ') IS NOT NULL
+    BEGIN
+        EXEC sp_rename @old, N'RawJson', N'COLUMN';
+        RETURN;
+    END;
+    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = @obj AND name = N'RawJson'
+                   AND system_type_id = TYPE_ID(N'nvarchar'))
+        RETURN;
+
+    DECLARE @t NVARCHAR(300) = N'sitoo.' + QUOTENAME(@Table);
+    DECLARE @sql NVARCHAR(MAX);
+
+    IF COL_LENGTH(N'sitoo.' + @Table, N'RawJsonZ') IS NULL
+    BEGIN
+        SET @sql = N'ALTER TABLE ' + @t + N' ADD RawJsonZ VARBINARY(MAX) NULL;';
+        EXEC (@sql);
+    END;
+
+    SET @sql = N'UPDATE ' + @t + N' SET RawJsonZ = COMPRESS(RawJson) WHERE RawJsonZ IS NULL AND RawJson IS NOT NULL;';
+    EXEC (@sql);
+
+    SET @sql = N'ALTER TABLE ' + @t + N' DROP COLUMN RawJson;';
+    EXEC (@sql);
+    EXEC sp_rename @old, N'RawJson', N'COLUMN';
+    SET @sql = N'ALTER TABLE ' + @t + N' REBUILD;';
+    EXEC (@sql);
+    PRINT 'RawJson komprimerad i ' + @t;
+END;
+GO
+
+-- Tar bort RawJson i tabeller där samma data redan finns i föräldraraden.
+CREATE OR ALTER PROCEDURE sitoo.DropRawJson
+    @Table SYSNAME
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF COL_LENGTH(N'sitoo.' + @Table, N'RawJson') IS NULL RETURN;
+    DECLARE @t NVARCHAR(300) = N'sitoo.' + QUOTENAME(@Table);
+    DECLARE @sql NVARCHAR(MAX) = N'ALTER TABLE ' + @t + N' DROP COLUMN RawJson; ALTER TABLE ' + @t + N' REBUILD;';
+    EXEC (@sql);
+    PRINT 'RawJson borttagen i ' + @t;
+END;
+GO
+
+EXEC sitoo.DropRawJson N'OrderItems';
+GO
+EXEC sitoo.DropRawJson N'OrderPayments';
+GO
+EXEC sitoo.DropRawJson N'ZReportPayments';
+GO
+EXEC sitoo.MigrateRawJson N'Stores';
+GO
+EXEC sitoo.MigrateRawJson N'Warehouses';
+GO
+EXEC sitoo.MigrateRawJson N'Users';
+GO
+EXEC sitoo.MigrateRawJson N'ZReports';
+GO
+EXEC sitoo.MigrateRawJson N'Products';
+GO
+EXEC sitoo.MigrateRawJson N'StockItems';
+GO
+EXEC sitoo.MigrateRawJson N'Orders';
 GO
 
 ------------------------------------------------------------------------------
@@ -411,13 +510,13 @@ BEGIN
         EshopId = s.EshopId, StoreType = s.StoreType, Name = s.Name, ExternalId = s.ExternalId,
         ExternalGroupId = s.ExternalGroupId, Phone = s.Phone, Email = s.Email, Address = s.Address,
         Address2 = s.Address2, Zip = s.Zip, City = s.City, State = s.State, CountryId = s.CountryId,
-        Latitude = s.Latitude, Longitude = s.Longitude, IsDeleted = 0, RawJson = s.RawJson, SyncedUtc = @now
+        Latitude = s.Latitude, Longitude = s.Longitude, IsDeleted = 0, RawJson = COMPRESS(s.RawJson), SyncedUtc = @now
     WHEN NOT MATCHED THEN INSERT
         (SiteId, StoreId, EshopId, StoreType, Name, ExternalId, ExternalGroupId, Phone, Email, Address,
          Address2, Zip, City, State, CountryId, Latitude, Longitude, IsDeleted, RawJson, SyncedUtc)
     VALUES
         (@SiteId, s.StoreId, s.EshopId, s.StoreType, s.Name, s.ExternalId, s.ExternalGroupId, s.Phone, s.Email, s.Address,
-         s.Address2, s.Zip, s.City, s.State, s.CountryId, s.Latitude, s.Longitude, 0, s.RawJson, @now);
+         s.Address2, s.Zip, s.City, s.State, s.CountryId, s.Latitude, s.Longitude, 0, COMPRESS(s.RawJson), @now);
 
     DECLARE @rows INT = @@ROWCOUNT;
 
@@ -469,13 +568,13 @@ BEGIN
     WHEN MATCHED THEN UPDATE SET
         WarehouseType = s.WarehouseType, UseType = s.UseType, StoreId = s.StoreId, Sellable = s.Sellable,
         CurrencyCode = s.CurrencyCode, Name = s.Name, ExternalId = s.ExternalId, Address = s.Address,
-        Zip = s.Zip, City = s.City, CountryId = s.CountryId, IsDeleted = 0, RawJson = s.RawJson, SyncedUtc = @now
+        Zip = s.Zip, City = s.City, CountryId = s.CountryId, IsDeleted = 0, RawJson = COMPRESS(s.RawJson), SyncedUtc = @now
     WHEN NOT MATCHED THEN INSERT
         (SiteId, WarehouseId, WarehouseType, UseType, StoreId, Sellable, CurrencyCode, Name, ExternalId,
          Address, Zip, City, CountryId, IsDeleted, RawJson, SyncedUtc)
     VALUES
         (@SiteId, s.WarehouseId, s.WarehouseType, s.UseType, s.StoreId, s.Sellable, s.CurrencyCode, s.Name, s.ExternalId,
-         s.Address, s.Zip, s.City, s.CountryId, 0, s.RawJson, @now);
+         s.Address, s.Zip, s.City, s.CountryId, 0, COMPRESS(s.RawJson), @now);
 
     DECLARE @rows INT = @@ROWCOUNT;
 
@@ -544,7 +643,7 @@ BEGIN
         MoneyPrice = s.MoneyPrice, MoneyPriceOrg = s.MoneyPriceOrg, MoneyPriceIn = s.MoneyPriceIn,
         MoneyFinalPrice = s.MoneyFinalPrice, StockCountEnable = s.StockCountEnable, UnitLabel = s.UnitLabel,
         SkuManufacturer = s.SkuManufacturer, DateCreatedUtc = s.DateCreatedUtc, DateModifiedUtc = s.DateModifiedUtc,
-        IsDeleted = 0, DeletedUtc = NULL, RawJson = s.RawJson, SyncedUtc = @now
+        IsDeleted = 0, DeletedUtc = NULL, RawJson = COMPRESS(s.RawJson), SyncedUtc = @now
     WHEN NOT MATCHED THEN INSERT
         (SiteId, ProductId, Sku, Title, VariantParentId, Barcode, Active, ActivePos, VatId, VatValue,
          ManufacturerId, DefaultCategoryId, MoneyPrice, MoneyPriceOrg, MoneyPriceIn, MoneyFinalPrice,
@@ -552,7 +651,7 @@ BEGIN
     VALUES
         (@SiteId, s.ProductId, s.Sku, s.Title, s.VariantParentId, s.Barcode, s.Active, s.ActivePos, s.VatId, s.VatValue,
          s.ManufacturerId, s.DefaultCategoryId, s.MoneyPrice, s.MoneyPriceOrg, s.MoneyPriceIn, s.MoneyFinalPrice,
-         s.StockCountEnable, s.UnitLabel, s.SkuManufacturer, s.DateCreatedUtc, s.DateModifiedUtc, 0, s.RawJson, @now);
+         s.StockCountEnable, s.UnitLabel, s.SkuManufacturer, s.DateCreatedUtc, s.DateModifiedUtc, 0, COMPRESS(s.RawJson), @now);
 
     SELECT @@ROWCOUNT AS AffectedRows;
 END;
@@ -628,13 +727,13 @@ BEGIN
         WarehouseItemId = s.WarehouseItemId, BinLocation = s.BinLocation, DecimalThreshold = s.DecimalThreshold,
         DecimalTotal = s.DecimalTotal, DecimalReserved = s.DecimalReserved, DecimalAvailable = s.DecimalAvailable,
         MoneyTotal = s.MoneyTotal, DateLastModifiedUtc = s.DateLastModifiedUtc,
-        DateLastStocktakingUtc = s.DateLastStocktakingUtc, RawJson = s.RawJson, SyncedUtc = @now
+        DateLastStocktakingUtc = s.DateLastStocktakingUtc, RawJson = COMPRESS(s.RawJson), SyncedUtc = @now
     WHEN NOT MATCHED THEN INSERT
         (SiteId, WarehouseId, Sku, WarehouseItemId, BinLocation, DecimalThreshold, DecimalTotal, DecimalReserved,
          DecimalAvailable, MoneyTotal, DateLastModifiedUtc, DateLastStocktakingUtc, RawJson, SyncedUtc)
     VALUES
         (@SiteId, @WarehouseId, s.Sku, s.WarehouseItemId, s.BinLocation, s.DecimalThreshold, s.DecimalTotal, s.DecimalReserved,
-         s.DecimalAvailable, s.MoneyTotal, s.DateLastModifiedUtc, s.DateLastStocktakingUtc, s.RawJson, @now);
+         s.DecimalAvailable, s.MoneyTotal, s.DateLastModifiedUtc, s.DateLastStocktakingUtc, COMPRESS(s.RawJson), @now);
 
     SELECT @@ROWCOUNT AS AffectedRows;
 END;
@@ -710,7 +809,7 @@ BEGIN
         CustomerRef = s.CustomerRef, MoneyTotalNet = s.MoneyTotalNet, MoneyTotalVat = s.MoneyTotalVat,
         MoneyFinalNet = s.MoneyFinalNet, MoneyFinalVat = s.MoneyFinalVat, MoneyFinalSalesTax = s.MoneyFinalSalesTax,
         MoneyTotalGrossRoundoff = s.MoneyTotalGrossRoundoff, MoneyTotalGrossAll = s.MoneyTotalGrossAll,
-        Comment = s.Comment, RawJson = s.RawJson, SyncedUtc = @now
+        Comment = s.Comment, RawJson = COMPRESS(s.RawJson), SyncedUtc = @now
     WHEN NOT MATCHED THEN INSERT
         (OrderId, EshopId, ExternalId, CreditOrderId, CartId, OrderDateUtc, OrderStateId, PaymentStateId,
          OrderTypeId, RegisterId, WarehouseId, UserIdStaff, CurrencyCode, Email, NameFirst, NameLast,
@@ -720,7 +819,7 @@ BEGIN
         (s.OrderId, s.EshopId, s.ExternalId, s.CreditOrderId, s.CartId, s.OrderDateUtc, s.OrderStateId, s.PaymentStateId,
          s.OrderTypeId, s.RegisterId, s.WarehouseId, s.UserIdStaff, s.CurrencyCode, s.Email, s.NameFirst, s.NameLast,
          s.PersonalId, s.Company, s.Phone, s.CustomerRef, s.MoneyTotalNet, s.MoneyTotalVat, s.MoneyFinalNet, s.MoneyFinalVat,
-         s.MoneyFinalSalesTax, s.MoneyTotalGrossRoundoff, s.MoneyTotalGrossAll, s.Comment, s.RawJson, @now);
+         s.MoneyFinalSalesTax, s.MoneyTotalGrossRoundoff, s.MoneyTotalGrossAll, s.Comment, COMPRESS(s.RawJson), @now);
 
     DECLARE @rows INT = @@ROWCOUNT;
 
@@ -732,7 +831,7 @@ BEGIN
         (OrderId, LineNumber, OrderItemId, OrderItemType, ProductId, Sku, ProductName, Quantity,
          DecimalQuantityTotal, UnitLabel, VatValue, MoneyNetPricePerUnit, MoneyPriceOrg, MoneyOriginalPrice,
          MoneyDiscountedPrice, MoneyDiscount, MoneyItemTotalNet, MoneyItemTotalVat, VoucherId, VoucherCode,
-         VoucherName, RawJson)
+         VoucherName)
     SELECT
         s.OrderId,
         CAST(oi.[key] AS INT) + 1,
@@ -748,8 +847,7 @@ BEGIN
         TRY_CONVERT(DECIMAL(19,2), it.MoneyDiscount),
         TRY_CONVERT(DECIMAL(19,2), it.MoneyItemTotalNet),
         TRY_CONVERT(DECIMAL(19,2), it.MoneyItemTotalVat),
-        it.VoucherId, it.VoucherCode, it.VoucherName,
-        oi.[value]
+        it.VoucherId, it.VoucherCode, it.VoucherName
     FROM #src s
     CROSS APPLY OPENJSON(s.RawJson, '$.orderitems') oi
     CROSS APPLY OPENJSON(oi.[value]) WITH (
@@ -774,13 +872,12 @@ BEGIN
         VoucherName          NVARCHAR(255) '$.vouchername'
     ) it;
 
-    INSERT sitoo.OrderPayments (OrderId, LineNumber, Name, MoneyAmount, RawJson)
+    INSERT sitoo.OrderPayments (OrderId, LineNumber, Name, MoneyAmount)
     SELECT
         s.OrderId,
         CAST(p.[key] AS INT) + 1,
         pj.Name,
-        TRY_CONVERT(DECIMAL(19,2), pj.MoneyAmount),
-        p.[value]
+        TRY_CONVERT(DECIMAL(19,2), pj.MoneyAmount)
     FROM #src s
     CROSS APPLY OPENJSON(s.RawJson, '$.payments') p
     CROSS APPLY OPENJSON(p.[value]) WITH (
@@ -877,7 +974,7 @@ BEGIN
         MoneyCashExpected = s.MoneyCashExpected, MoneyCashCounted = s.MoneyCashCounted, MoneyCashDiff = s.MoneyCashDiff,
         NumReceipts = s.NumReceipts, MoneyGrandTotalSales = s.MoneyGrandTotalSales,
         MoneyGrandTotalRefund = s.MoneyGrandTotalRefund, MoneyGrandTotalNet = s.MoneyGrandTotalNet,
-        RawJson = s.RawJson, SyncedUtc = @now
+        RawJson = COMPRESS(s.RawJson), SyncedUtc = @now
     WHEN NOT MATCHED THEN INSERT
         (RegisterId, ZReportId, EshopId, StoreExternalId, StoreName, RegisterNumber, Company, Staff, StaffUserId,
          CurrencyCode, DateOpenedUtc, DateCreatedUtc, DateAddedUtc, MoneySalesTotal, MoneySalesTotalNet, NumSales,
@@ -889,7 +986,7 @@ BEGIN
          s.CurrencyCode, s.DateOpenedUtc, s.DateCreatedUtc, s.DateAddedUtc, s.MoneySalesTotal, s.MoneySalesTotalNet, s.NumSales,
          s.NumSalesItems, s.MoneyRefundTotal, s.MoneyRefundTotalNet, s.NumRefund, s.NumRefundItems, s.MoneyDiscount, s.MoneyRoundOff,
          s.MoneySummaryTotal, s.MoneyCashExpected, s.MoneyCashCounted, s.MoneyCashDiff, s.NumReceipts, s.MoneyGrandTotalSales,
-         s.MoneyGrandTotalRefund, s.MoneyGrandTotalNet, s.RawJson, @now);
+         s.MoneyGrandTotalRefund, s.MoneyGrandTotalNet, COMPRESS(s.RawJson), @now);
 
     DECLARE @rows INT = @@ROWCOUNT;
 
@@ -901,9 +998,9 @@ BEGIN
         JOIN #src s ON s.RegisterId = c.RegisterId AND s.ZReportId = c.ZReportId;
 
     -- Betalningar
-    INSERT sitoo.ZReportPayments (RegisterId, ZReportId, Kind, LineNumber, Name, MoneyTotal, RawJson)
+    INSERT sitoo.ZReportPayments (RegisterId, ZReportId, Kind, LineNumber, Name, MoneyTotal)
     SELECT s.RegisterId, s.ZReportId, x.Kind, CAST(x.[key] AS INT) + 1, pj.Name,
-           TRY_CONVERT(DECIMAL(19,2), pj.MoneyTotal), x.[value]
+           TRY_CONVERT(DECIMAL(19,2), pj.MoneyTotal)
     FROM #src s
     CROSS APPLY (
         SELECT N'sales'  AS Kind, a.[key], a.[value] FROM OPENJSON(s.RawJson, '$.paymentssales')  a
@@ -1019,7 +1116,7 @@ BEGIN
         Department = s.Department, CompanyId = s.CompanyId, Address = s.Address, Address2 = s.Address2,
         Zip = s.Zip, City = s.City, State = s.State, CountryId = s.CountryId, Phone = s.Phone,
         Mobile = s.Mobile, Role = s.Role, Active = s.Active, Notes = s.Notes,
-        DateCreatedUtc = s.DateCreatedUtc, DateModifiedUtc = s.DateModifiedUtc, RawJson = s.RawJson, SyncedUtc = @now
+        DateCreatedUtc = s.DateCreatedUtc, DateModifiedUtc = s.DateModifiedUtc, RawJson = COMPRESS(s.RawJson), SyncedUtc = @now
     WHEN NOT MATCHED THEN INSERT
         (UserId, Email, NameFirst, NameLast, PersonalId, ExternalId, CustomerNumber, Company, Department,
          CompanyId, Address, Address2, Zip, City, State, CountryId, Phone, Mobile, Role, Active, Notes,
@@ -1027,7 +1124,7 @@ BEGIN
     VALUES
         (s.UserId, s.Email, s.NameFirst, s.NameLast, s.PersonalId, s.ExternalId, s.CustomerNumber, s.Company, s.Department,
          s.CompanyId, s.Address, s.Address2, s.Zip, s.City, s.State, s.CountryId, s.Phone, s.Mobile, s.Role, s.Active, s.Notes,
-         s.DateCreatedUtc, s.DateModifiedUtc, s.RawJson, @now);
+         s.DateCreatedUtc, s.DateModifiedUtc, COMPRESS(s.RawJson), @now);
 
     SELECT @@ROWCOUNT AS AffectedRows;
 END;

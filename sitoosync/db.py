@@ -36,7 +36,7 @@ class Database:
                    create_database=cfg.db_create_database, login_timeout=login_timeout)
 
     # ------------------------------------------------------------ connection
-    def _connect(self, database: str):
+    def _connect(self, database: str, timeout: int = 900):
         import pymssql  # importeras här så att testerna kan köras utan drivrutinen
 
         return pymssql.connect(
@@ -47,7 +47,7 @@ class Database:
             database=database,
             autocommit=True,
             login_timeout=self.login_timeout,
-            timeout=900,
+            timeout=timeout,
             charset="UTF-8",
             tds_version="7.4",
             appname="sitoo-sync",
@@ -94,10 +94,18 @@ class Database:
             conn.close()
 
     def apply_schema(self) -> None:
+        """Skapar/uppdaterar tabeller och procedurer. Egen anslutning utan tidsgräns,
+        eftersom en migrering av stora tabeller kan ta flera minuter."""
         sql = SCHEMA_FILE.read_text(encoding="utf-8")
-        cur = self.conn.cursor()
-        for batch in split_batches(sql):
-            cur.execute(batch)
+        conn = self._connect(self.database, timeout=0)
+        try:
+            cur = conn.cursor()
+            for batch in split_batches(sql):
+                if "sitoo.MigrateRawJson N'" in batch or "sitoo.DropRawJson N'" in batch:
+                    log.debug("Kör %s", batch.strip())
+                cur.execute(batch)
+        finally:
+            conn.close()
         log.info("Databasschemat är uppdaterat (%s)", self.database)
 
     # ------------------------------------------------------------ operations

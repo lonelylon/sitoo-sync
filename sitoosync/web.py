@@ -484,6 +484,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             badge = '<span class="badge b-warn">Pausad</span>'
         elif st.state == "fel":
             badge = '<span class="badge b-err">Fel</span>'
+        elif st.state == "uppdaterar databasen":
+            badge = '<span class="badge b-run">Uppdaterar databasen…</span>'
         elif st.state == "startar":
             badge = '<span class="badge b-idle">Startar…</span>'
         else:

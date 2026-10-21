@@ -12,7 +12,11 @@ Hämtar data från Sitoos REST API och sparar den i SQL Server. Tjänsten körs 
 | Z-rapporter | `sitoo.ZReports`, `sitoo.ZReportPayments`, `sitoo.ZReportVatGroups`, `sitoo.ZReportProductGroups` | Nya, varje timme |
 | Personer | `sitoo.Users` | Allt, var 6:e timme |
 
-Alla tabeller har kolumnen `RawJson` med hela posten från Sitoo, så fält utan egen kolumn kan läsas med `JSON_VALUE(RawJson, '$.faltnamn')`. Tider lagras i UTC. Vyerna `sitoo.vLagersaldo` och `sitoo.vOrderrader` visar svensk tid.
+Huvudtabellerna har kolumnen `RawJson` med hela posten från Sitoo, lagrad komprimerad. Fält utan egen kolumn läses med funktionen `sitoo.Json`, till exempel `JSON_VALUE(sitoo.Json(RawJson), '$.customerref')`. Orderrader och betalningar finns i orderns `RawJson`. Tider lagras i UTC.
+
+Undvik `SELECT *` på stora tabeller: `RawJson` är den tunga kolumnen. Välj de kolumner du behöver i stället.
+
+Databasen körs med enkel återställningsmodell (SIMPLE), eftersom all data kan hämtas om från Sitoo. Det hindrar loggfilen från att växa obegränsat. Vyerna `sitoo.vLagersaldo` och `sitoo.vOrderrader` visar svensk tid.
 
 ---
 
