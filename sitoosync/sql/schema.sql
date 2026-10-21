@@ -171,6 +171,7 @@ CREATE TABLE sitoo.Orders (
     CreditOrderId            BIGINT        NULL,
     CartId                   NVARCHAR(64)  NULL,
     OrderDateUtc             DATETIME2(0)  NULL,
+    OrderDateLocal           DATETIME2(0)  NULL,   -- svensk tid, för dagar/veckor i rapporter
     OrderStateId             INT           NULL,
     PaymentStateId           INT           NULL,
     OrderTypeId              INT           NULL,
@@ -464,6 +465,22 @@ EXEC sitoo.MigrateRawJson N'Orders';
 GO
 
 ------------------------------------------------------------------------------
+-- Orderdatum i svensk tid (OrderDateLocal). AT TIME ZONE kan inte indexeras som
+-- beräknad kolumn, så värdet sparas vid varje MERGE och fylls i för äldre rader.
+------------------------------------------------------------------------------
+IF COL_LENGTH(N'sitoo.Orders', N'OrderDateLocal') IS NULL
+    ALTER TABLE sitoo.Orders ADD OrderDateLocal DATETIME2(0) NULL;
+GO
+UPDATE sitoo.Orders
+SET OrderDateLocal = CAST(OrderDateUtc AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS DATETIME2(0))
+WHERE OrderDateLocal IS NULL AND OrderDateUtc IS NOT NULL;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Orders_OrderDateLocal' AND object_id = OBJECT_ID(N'sitoo.Orders'))
+    CREATE INDEX IX_Orders_OrderDateLocal ON sitoo.Orders (OrderDateLocal)
+        INCLUDE (MoneyFinalNet, MoneyTotalGrossAll, WarehouseId, EshopId);
+GO
+
+------------------------------------------------------------------------------
 -- MERGE-procedurer. Varje procedur tar emot en JSON-array direkt från Sitoo.
 -- Belopp och decimaltal tolkas med TRY_CONVERT så att ett oväntat värde
 -- blir NULL i stället för att stoppa hela synken.
@@ -751,6 +768,7 @@ BEGIN
         r.[value] AS RawJson,
         j.OrderId, j.EshopId, j.ExternalId, j.CreditOrderId, j.CartId,
         sitoo.FromUnix(j.OrderDate) AS OrderDateUtc,
+        CAST(sitoo.FromUnix(j.OrderDate) AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS DATETIME2(0)) AS OrderDateLocal,
         j.OrderStateId, j.PaymentStateId, j.OrderTypeId, j.RegisterId, j.WarehouseId, j.UserIdStaff,
         j.CurrencyCode, j.Email, j.NameFirst, j.NameLast, j.PersonalId, j.Company, j.Phone, j.CustomerRef,
         TRY_CONVERT(DECIMAL(19,2), j.MoneyTotalNet)           AS MoneyTotalNet,
@@ -802,7 +820,7 @@ BEGIN
         ON t.OrderId = s.OrderId
     WHEN MATCHED THEN UPDATE SET
         EshopId = s.EshopId, ExternalId = s.ExternalId, CreditOrderId = s.CreditOrderId, CartId = s.CartId,
-        OrderDateUtc = s.OrderDateUtc, OrderStateId = s.OrderStateId, PaymentStateId = s.PaymentStateId,
+        OrderDateUtc = s.OrderDateUtc, OrderDateLocal = s.OrderDateLocal, OrderStateId = s.OrderStateId, PaymentStateId = s.PaymentStateId,
         OrderTypeId = s.OrderTypeId, RegisterId = s.RegisterId, WarehouseId = s.WarehouseId,
         UserIdStaff = s.UserIdStaff, CurrencyCode = s.CurrencyCode, Email = s.Email, NameFirst = s.NameFirst,
         NameLast = s.NameLast, PersonalId = s.PersonalId, Company = s.Company, Phone = s.Phone,
@@ -811,12 +829,12 @@ BEGIN
         MoneyTotalGrossRoundoff = s.MoneyTotalGrossRoundoff, MoneyTotalGrossAll = s.MoneyTotalGrossAll,
         Comment = s.Comment, RawJson = COMPRESS(s.RawJson), SyncedUtc = @now
     WHEN NOT MATCHED THEN INSERT
-        (OrderId, EshopId, ExternalId, CreditOrderId, CartId, OrderDateUtc, OrderStateId, PaymentStateId,
+        (OrderId, EshopId, ExternalId, CreditOrderId, CartId, OrderDateUtc, OrderDateLocal, OrderStateId, PaymentStateId,
          OrderTypeId, RegisterId, WarehouseId, UserIdStaff, CurrencyCode, Email, NameFirst, NameLast,
          PersonalId, Company, Phone, CustomerRef, MoneyTotalNet, MoneyTotalVat, MoneyFinalNet, MoneyFinalVat,
          MoneyFinalSalesTax, MoneyTotalGrossRoundoff, MoneyTotalGrossAll, Comment, RawJson, SyncedUtc)
     VALUES
-        (s.OrderId, s.EshopId, s.ExternalId, s.CreditOrderId, s.CartId, s.OrderDateUtc, s.OrderStateId, s.PaymentStateId,
+        (s.OrderId, s.EshopId, s.ExternalId, s.CreditOrderId, s.CartId, s.OrderDateUtc, s.OrderDateLocal, s.OrderStateId, s.PaymentStateId,
          s.OrderTypeId, s.RegisterId, s.WarehouseId, s.UserIdStaff, s.CurrencyCode, s.Email, s.NameFirst, s.NameLast,
          s.PersonalId, s.Company, s.Phone, s.CustomerRef, s.MoneyTotalNet, s.MoneyTotalVat, s.MoneyFinalNet, s.MoneyFinalVat,
          s.MoneyFinalSalesTax, s.MoneyTotalGrossRoundoff, s.MoneyTotalGrossAll, s.Comment, COMPRESS(s.RawJson), @now);
@@ -1181,4 +1199,17 @@ FROM sitoo.Orders o
 JOIN sitoo.OrderItems i ON i.OrderId = o.OrderId
 LEFT JOIN sitoo.Warehouses w ON w.SiteId = o.EshopId AND w.WarehouseId = o.WarehouseId
 LEFT JOIN sitoo.Stores    st ON st.SiteId = w.SiteId AND st.StoreId = w.StoreId;
+GO
+
+CREATE OR ALTER VIEW sitoo.vDagsforsaljning
+AS
+-- Försäljning per dag i svensk tid. Används bl.a. för rekorddagen i Grafana.
+SELECT
+    CAST(OrderDateLocal AS date)                                AS Dag,
+    SUM(MoneyFinalNet)                                          AS Forsaljning,
+    SUM(MoneyTotalGrossAll)                                     AS ForsaljningInklMoms,
+    SUM(CASE WHEN MoneyTotalGrossAll > 0 THEN 1 ELSE 0 END)     AS Kvitton
+FROM sitoo.Orders
+WHERE OrderDateLocal IS NOT NULL
+GROUP BY CAST(OrderDateLocal AS date);
 GO

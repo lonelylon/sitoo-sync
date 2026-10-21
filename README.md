@@ -86,7 +86,9 @@ ORDER BY 1
 
 ### Färdig dashboard
 
-Filen [`grafana/sitoo-forsaljning-live.json`](grafana/sitoo-forsaljning-live.json) är en färdig dashboard. Importera den under **Dashboards > New > Import** och välj din SQL Server-datakälla. Den visar försäljning, kvitton, snittkvitto och sålda artiklar jämfört med samma tid förra veckan, ackumulerad försäljning och försäljning per timme, toppsäljare, betalsätt, försäljning per lager, de senaste köpen och lågt lagersaldo. Den uppdateras varje minut.
+Filen [`grafana/sitoo-forsaljning-live.json`](grafana/sitoo-forsaljning-live.json) är en färdig dashboard. Importera den under **Dashboards > New > Import** och välj din SQL Server-datakälla. Den jämför försäljningen med **samma veckodag i samma ISO-vecka förra året**, till exempel lördag vecka 28 2026 mot lördag vecka 28 2025, och med **rekorddagen**, den hela dag med högst försäljning genom tiderna. Den visar också ackumulerad försäljning och försäljning per timme, toppsäljare, betalsätt, försäljning per lager, de senaste köpen, de tio bästa dagarna och lågt lagersaldo. Den uppdateras varje minut.
+
+`sitoo.Orders.OrderDateLocal` är orderdatumet i svensk tid, och vyn `sitoo.vDagsforsaljning` ger försäljningen per dag i svensk tid.
 
 ## Webbgränssnittet
 

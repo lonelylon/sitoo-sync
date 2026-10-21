@@ -24,6 +24,12 @@
     },
     {
       "type": "panel",
+      "id": "gauge",
+      "name": "Gauge",
+      "version": ""
+    },
+    {
+      "type": "panel",
       "id": "timeseries",
       "name": "Time series",
       "version": ""
@@ -49,7 +55,7 @@
   ],
   "title": "Sitoo – försäljning live",
   "uid": "sitoo-sales-live",
-  "description": "Försäljning från Sitoo via sitoo-sync. Uppdateras varje minut.",
+  "description": "Försäljning från Sitoo via sitoo-sync, jämfört med samma veckodag förra året och rekorddagen.",
   "tags": [
     "sitoo",
     "försäljning"
@@ -73,7 +79,7 @@
   "weekStart": "monday",
   "refresh": "1m",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "templating": {
     "list": []
   },
@@ -106,10 +112,10 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT ISNULL(SUM(o.MoneyFinalNet), 0) AS value FROM sitoo.Orders o WHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2))"
+          "rawSql": "WITH r0 AS (\n  SELECT DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AS F,\n         DATEADD(SECOND, $__unixEpochTo(),   CAST('19700101' AS datetime2)) AS T\n), r1 AS (\n  SELECT F, T,\n         CAST(F AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS FL,\n         CAST(T AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS TL\n  FROM r0\n), r AS (\n  SELECT F, T, FL, TL, CAST(FL AS date) AS D,\n         CASE WHEN DATEPART(ISO_WEEK, DATEADD(DAY, -364, CAST(FL AS date))) <> DATEPART(ISO_WEEK, CAST(FL AS date))\n               AND DATEPART(ISO_WEEK, DATEADD(DAY, -371, CAST(FL AS date))) =  DATEPART(ISO_WEEK, CAST(FL AS date))\n              THEN 371 ELSE 364 END AS N\n  FROM r1\n), rec AS (\n  -- Rekorddagen: den hela dag före vald period med högst försäljning\n  SELECT TOP 1 v.Dag, v.Forsaljning\n  FROM sitoo.vDagsforsaljning v CROSS JOIN r\n  WHERE v.Dag < r.D\n  ORDER BY v.Forsaljning DESC\n)\nSELECT ISNULL(SUM(o.MoneyFinalNet), 0) AS value FROM sitoo.Orders o CROSS JOIN r WHERE o.OrderDateLocal >= r.FL AND o.OrderDateLocal < r.TL"
         }
       ],
-      "description": "Summa av ordrarnas belopp exkl. moms i vald period. Returer räknas av.",
+      "description": "Ordrarnas belopp exkl. moms i vald period. Returer räknas av.",
       "fieldConfig": {
         "defaults": {
           "unit": "currencySEK",
@@ -142,15 +148,16 @@
         "graphMode": "none",
         "justifyMode": "center",
         "textMode": "value",
-        "orientation": "auto",
+        "orientation": "vertical",
         "wideLayout": true,
-        "showPercentChange": false
+        "showPercentChange": false,
+        "text": {}
       }
     },
     {
       "id": 2,
       "type": "stat",
-      "title": "Samma tid förra veckan",
+      "title": "Samma dag förra året",
       "datasource": {
         "type": "mssql",
         "uid": "${DS_SITOO}"
@@ -171,10 +178,10 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT ISNULL(SUM(o.MoneyFinalNet), 0) AS value FROM sitoo.Orders o WHERE o.OrderDateUtc >= DATEADD(DAY, -7, DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2))) AND o.OrderDateUtc < DATEADD(DAY, -7, DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2)))"
+          "rawSql": "WITH r0 AS (\n  SELECT DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AS F,\n         DATEADD(SECOND, $__unixEpochTo(),   CAST('19700101' AS datetime2)) AS T\n), r1 AS (\n  SELECT F, T,\n         CAST(F AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS FL,\n         CAST(T AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS TL\n  FROM r0\n), r AS (\n  SELECT F, T, FL, TL, CAST(FL AS date) AS D,\n         CASE WHEN DATEPART(ISO_WEEK, DATEADD(DAY, -364, CAST(FL AS date))) <> DATEPART(ISO_WEEK, CAST(FL AS date))\n               AND DATEPART(ISO_WEEK, DATEADD(DAY, -371, CAST(FL AS date))) =  DATEPART(ISO_WEEK, CAST(FL AS date))\n              THEN 371 ELSE 364 END AS N\n  FROM r1\n), rec AS (\n  -- Rekorddagen: den hela dag före vald period med högst försäljning\n  SELECT TOP 1 v.Dag, v.Forsaljning\n  FROM sitoo.vDagsforsaljning v CROSS JOIN r\n  WHERE v.Dag < r.D\n  ORDER BY v.Forsaljning DESC\n)\nSELECT CONCAT(CHOOSE(DATEDIFF(DAY, '19000101', DATEADD(DAY, -r.N, r.D)) % 7 + 1, 'Mån', 'Tis', 'Ons', 'Tor', 'Fre', 'Lör', 'Sön'), ' v', DATEPART(ISO_WEEK, DATEADD(DAY, -r.N, r.D)),\n              ' ', CONVERT(char(10), DATEADD(DAY, -r.N, r.D), 120)) AS Dag,\n       (SELECT ISNULL(SUM(o.MoneyFinalNet), 0) FROM sitoo.Orders o WHERE o.OrderDateLocal >= DATEADD(DAY, -r.N, r.FL) AND o.OrderDateLocal < DATEADD(DAY, -r.N, r.TL)) AS [Försäljning]\nFROM r"
         }
       ],
-      "description": "Samma period, en vecka tidigare.",
+      "description": "Samma veckodag i samma ISO-vecka förra året, fram till samma klockslag. Exempel: lördag vecka 28 2026 jämförs med lördag vecka 28 2025.",
       "fieldConfig": {
         "defaults": {
           "unit": "currencySEK",
@@ -201,21 +208,24 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": false
+          "values": true
         },
         "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "center",
-        "textMode": "value",
-        "orientation": "auto",
+        "textMode": "value_and_name",
+        "orientation": "vertical",
         "wideLayout": true,
-        "showPercentChange": false
+        "showPercentChange": false,
+        "text": {
+          "titleSize": 13
+        }
       }
     },
     {
       "id": 3,
       "type": "stat",
-      "title": "Förändring mot förra veckan",
+      "title": "Mot förra året",
       "datasource": {
         "type": "mssql",
         "uid": "${DS_SITOO}"
@@ -223,7 +233,7 @@
       "gridPos": {
         "x": 9,
         "y": 0,
-        "w": 4,
+        "w": 3,
         "h": 5
       },
       "targets": [
@@ -236,7 +246,7 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT CASE WHEN f.v = 0 THEN NULL ELSE (n.v - f.v) / ABS(f.v) * 100 END AS value\nFROM (SELECT ISNULL(SUM(o.MoneyFinalNet), 0) AS v FROM sitoo.Orders o WHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2))) n\nCROSS JOIN (SELECT ISNULL(SUM(o.MoneyFinalNet), 0) AS v FROM sitoo.Orders o WHERE o.OrderDateUtc >= DATEADD(DAY, -7, DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2))) AND o.OrderDateUtc < DATEADD(DAY, -7, DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2)))) f"
+          "rawSql": "WITH r0 AS (\n  SELECT DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AS F,\n         DATEADD(SECOND, $__unixEpochTo(),   CAST('19700101' AS datetime2)) AS T\n), r1 AS (\n  SELECT F, T,\n         CAST(F AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS FL,\n         CAST(T AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS TL\n  FROM r0\n), r AS (\n  SELECT F, T, FL, TL, CAST(FL AS date) AS D,\n         CASE WHEN DATEPART(ISO_WEEK, DATEADD(DAY, -364, CAST(FL AS date))) <> DATEPART(ISO_WEEK, CAST(FL AS date))\n               AND DATEPART(ISO_WEEK, DATEADD(DAY, -371, CAST(FL AS date))) =  DATEPART(ISO_WEEK, CAST(FL AS date))\n              THEN 371 ELSE 364 END AS N\n  FROM r1\n), rec AS (\n  -- Rekorddagen: den hela dag före vald period med högst försäljning\n  SELECT TOP 1 v.Dag, v.Forsaljning\n  FROM sitoo.vDagsforsaljning v CROSS JOIN r\n  WHERE v.Dag < r.D\n  ORDER BY v.Forsaljning DESC\n)\nSELECT CASE WHEN ly.v = 0 THEN NULL ELSE (n.v - ly.v) / ABS(ly.v) * 100 END AS value\nFROM r\nCROSS APPLY (SELECT ISNULL(SUM(o.MoneyFinalNet), 0) AS v FROM sitoo.Orders o WHERE o.OrderDateLocal >= r.FL AND o.OrderDateLocal < r.TL) n\nCROSS APPLY (SELECT ISNULL(SUM(o.MoneyFinalNet), 0) AS v FROM sitoo.Orders o WHERE o.OrderDateLocal >= DATEADD(DAY, -r.N, r.FL) AND o.OrderDateLocal < DATEADD(DAY, -r.N, r.TL)) ly"
         }
       ],
       "description": "",
@@ -279,21 +289,90 @@
         "graphMode": "none",
         "justifyMode": "center",
         "textMode": "value",
-        "orientation": "auto",
+        "orientation": "vertical",
         "wideLayout": true,
-        "showPercentChange": false
+        "showPercentChange": false,
+        "text": {}
       }
     },
     {
       "id": 4,
       "type": "stat",
-      "title": "Kvitton",
+      "title": "Rekorddag",
       "datasource": {
         "type": "mssql",
         "uid": "${DS_SITOO}"
       },
       "gridPos": {
-        "x": 13,
+        "x": 12,
+        "y": 0,
+        "w": 5,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "WITH r0 AS (\n  SELECT DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AS F,\n         DATEADD(SECOND, $__unixEpochTo(),   CAST('19700101' AS datetime2)) AS T\n), r1 AS (\n  SELECT F, T,\n         CAST(F AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS FL,\n         CAST(T AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS TL\n  FROM r0\n), r AS (\n  SELECT F, T, FL, TL, CAST(FL AS date) AS D,\n         CASE WHEN DATEPART(ISO_WEEK, DATEADD(DAY, -364, CAST(FL AS date))) <> DATEPART(ISO_WEEK, CAST(FL AS date))\n               AND DATEPART(ISO_WEEK, DATEADD(DAY, -371, CAST(FL AS date))) =  DATEPART(ISO_WEEK, CAST(FL AS date))\n              THEN 371 ELSE 364 END AS N\n  FROM r1\n), rec AS (\n  -- Rekorddagen: den hela dag före vald period med högst försäljning\n  SELECT TOP 1 v.Dag, v.Forsaljning\n  FROM sitoo.vDagsforsaljning v CROSS JOIN r\n  WHERE v.Dag < r.D\n  ORDER BY v.Forsaljning DESC\n)\nSELECT CONCAT(CHOOSE(DATEDIFF(DAY, '19000101', rec.Dag) % 7 + 1, 'Mån', 'Tis', 'Ons', 'Tor', 'Fre', 'Lör', 'Sön'), ' ', CONVERT(char(10), rec.Dag, 120)) AS Dag,\n       rec.Forsaljning AS [Försäljning]\nFROM rec"
+        }
+      ],
+      "description": "Den hela dag med högst försäljning exkl. moms genom tiderna, före vald period.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencySEK",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "orange",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value_and_name",
+        "orientation": "vertical",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "text": {
+          "titleSize": 13
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "gauge",
+      "title": "Andel av rekordet",
+      "datasource": {
+        "type": "mssql",
+        "uid": "${DS_SITOO}"
+      },
+      "gridPos": {
+        "x": 17,
         "y": 0,
         "w": 4,
         "h": 5
@@ -308,7 +387,77 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT COUNT(*) AS value FROM sitoo.Orders o WHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2)) AND o.MoneyTotalGrossAll > 0"
+          "rawSql": "WITH r0 AS (\n  SELECT DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AS F,\n         DATEADD(SECOND, $__unixEpochTo(),   CAST('19700101' AS datetime2)) AS T\n), r1 AS (\n  SELECT F, T,\n         CAST(F AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS FL,\n         CAST(T AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS TL\n  FROM r0\n), r AS (\n  SELECT F, T, FL, TL, CAST(FL AS date) AS D,\n         CASE WHEN DATEPART(ISO_WEEK, DATEADD(DAY, -364, CAST(FL AS date))) <> DATEPART(ISO_WEEK, CAST(FL AS date))\n               AND DATEPART(ISO_WEEK, DATEADD(DAY, -371, CAST(FL AS date))) =  DATEPART(ISO_WEEK, CAST(FL AS date))\n              THEN 371 ELSE 364 END AS N\n  FROM r1\n), rec AS (\n  -- Rekorddagen: den hela dag före vald period med högst försäljning\n  SELECT TOP 1 v.Dag, v.Forsaljning\n  FROM sitoo.vDagsforsaljning v CROSS JOIN r\n  WHERE v.Dag < r.D\n  ORDER BY v.Forsaljning DESC\n)\nSELECT CASE WHEN rec.Forsaljning > 0 THEN n.v / rec.Forsaljning * 100 END AS value\nFROM rec CROSS JOIN r\nCROSS APPLY (SELECT ISNULL(SUM(o.MoneyFinalNet), 0) AS v FROM sitoo.Orders o WHERE o.OrderDateLocal >= r.FL AND o.OrderDateLocal < r.TL) n"
+        }
+      ],
+      "description": "Hur stor del av rekorddagens försäljning som är uppnådd.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 0,
+          "min": 0,
+          "max": 100,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 75
+              },
+              {
+                "color": "green",
+                "value": 100
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdMarkers": false,
+        "showThresholdLabels": false,
+        "sizing": "auto"
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Kvitton",
+      "datasource": {
+        "type": "mssql",
+        "uid": "${DS_SITOO}"
+      },
+      "gridPos": {
+        "x": 21,
+        "y": 0,
+        "w": 3,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "WITH r0 AS (\n  SELECT DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AS F,\n         DATEADD(SECOND, $__unixEpochTo(),   CAST('19700101' AS datetime2)) AS T\n), r1 AS (\n  SELECT F, T,\n         CAST(F AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS FL,\n         CAST(T AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS TL\n  FROM r0\n), r AS (\n  SELECT F, T, FL, TL, CAST(FL AS date) AS D,\n         CASE WHEN DATEPART(ISO_WEEK, DATEADD(DAY, -364, CAST(FL AS date))) <> DATEPART(ISO_WEEK, CAST(FL AS date))\n               AND DATEPART(ISO_WEEK, DATEADD(DAY, -371, CAST(FL AS date))) =  DATEPART(ISO_WEEK, CAST(FL AS date))\n              THEN 371 ELSE 364 END AS N\n  FROM r1\n), rec AS (\n  -- Rekorddagen: den hela dag före vald period med högst försäljning\n  SELECT TOP 1 v.Dag, v.Forsaljning\n  FROM sitoo.vDagsforsaljning v CROSS JOIN r\n  WHERE v.Dag < r.D\n  ORDER BY v.Forsaljning DESC\n)\nSELECT COUNT(*) AS value FROM sitoo.Orders o CROSS JOIN r WHERE o.OrderDateLocal >= r.FL AND o.OrderDateLocal < r.TL AND o.MoneyTotalGrossAll > 0"
         }
       ],
       "description": "Antal köp (returer ej medräknade).",
@@ -344,13 +493,338 @@
         "graphMode": "none",
         "justifyMode": "center",
         "textMode": "value",
-        "orientation": "auto",
+        "orientation": "vertical",
         "wideLayout": true,
-        "showPercentChange": false
+        "showPercentChange": false,
+        "text": {}
       }
     },
     {
-      "id": 5,
+      "id": 7,
+      "type": "timeseries",
+      "title": "Ackumulerad försäljning – i dag, förra året och rekorddagen",
+      "datasource": {
+        "type": "mssql",
+        "uid": "${DS_SITOO}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 14,
+        "h": 11
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "WITH r0 AS (\n  SELECT DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AS F,\n         DATEADD(SECOND, $__unixEpochTo(),   CAST('19700101' AS datetime2)) AS T\n), r1 AS (\n  SELECT F, T,\n         CAST(F AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS FL,\n         CAST(T AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS TL\n  FROM r0\n), r AS (\n  SELECT F, T, FL, TL, CAST(FL AS date) AS D,\n         CASE WHEN DATEPART(ISO_WEEK, DATEADD(DAY, -364, CAST(FL AS date))) <> DATEPART(ISO_WEEK, CAST(FL AS date))\n               AND DATEPART(ISO_WEEK, DATEADD(DAY, -371, CAST(FL AS date))) =  DATEPART(ISO_WEEK, CAST(FL AS date))\n              THEN 371 ELSE 364 END AS N\n  FROM r1\n), rec AS (\n  -- Rekorddagen: den hela dag före vald period med högst försäljning\n  SELECT TOP 1 v.Dag, v.Forsaljning\n  FROM sitoo.vDagsforsaljning v CROSS JOIN r\n  WHERE v.Dag < r.D\n  ORDER BY v.Forsaljning DESC\n), h AS (\n  SELECT DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateLocal), 0) AS b, SUM(o.MoneyFinalNet) AS v\n  FROM sitoo.Orders o CROSS JOIN r \n  WHERE o.OrderDateLocal >= r.FL AND o.OrderDateLocal < r.TL\n  GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateLocal), 0)\n)\nSELECT CAST(DATEADD(DAY, 0, h.b) AT TIME ZONE 'W. Europe Standard Time' AT TIME ZONE 'UTC' AS datetime2(0)) AS time,\n       SUM(h.v) OVER (ORDER BY h.b) AS [I dag]\nFROM h CROSS JOIN r \nORDER BY 1"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "WITH r0 AS (\n  SELECT DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AS F,\n         DATEADD(SECOND, $__unixEpochTo(),   CAST('19700101' AS datetime2)) AS T\n), r1 AS (\n  SELECT F, T,\n         CAST(F AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS FL,\n         CAST(T AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS TL\n  FROM r0\n), r AS (\n  SELECT F, T, FL, TL, CAST(FL AS date) AS D,\n         CASE WHEN DATEPART(ISO_WEEK, DATEADD(DAY, -364, CAST(FL AS date))) <> DATEPART(ISO_WEEK, CAST(FL AS date))\n               AND DATEPART(ISO_WEEK, DATEADD(DAY, -371, CAST(FL AS date))) =  DATEPART(ISO_WEEK, CAST(FL AS date))\n              THEN 371 ELSE 364 END AS N\n  FROM r1\n), rec AS (\n  -- Rekorddagen: den hela dag före vald period med högst försäljning\n  SELECT TOP 1 v.Dag, v.Forsaljning\n  FROM sitoo.vDagsforsaljning v CROSS JOIN r\n  WHERE v.Dag < r.D\n  ORDER BY v.Forsaljning DESC\n), h AS (\n  SELECT DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateLocal), 0) AS b, SUM(o.MoneyFinalNet) AS v\n  FROM sitoo.Orders o CROSS JOIN r \n  WHERE o.OrderDateLocal >= DATEADD(DAY, -r.N, r.FL) AND o.OrderDateLocal < DATEADD(DAY, -r.N, r.TL)\n  GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateLocal), 0)\n)\nSELECT CAST(DATEADD(DAY, r.N, h.b) AT TIME ZONE 'W. Europe Standard Time' AT TIME ZONE 'UTC' AS datetime2(0)) AS time,\n       SUM(h.v) OVER (ORDER BY h.b) AS [Förra året]\nFROM h CROSS JOIN r \nORDER BY 1"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "WITH r0 AS (\n  SELECT DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AS F,\n         DATEADD(SECOND, $__unixEpochTo(),   CAST('19700101' AS datetime2)) AS T\n), r1 AS (\n  SELECT F, T,\n         CAST(F AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS FL,\n         CAST(T AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS TL\n  FROM r0\n), r AS (\n  SELECT F, T, FL, TL, CAST(FL AS date) AS D,\n         CASE WHEN DATEPART(ISO_WEEK, DATEADD(DAY, -364, CAST(FL AS date))) <> DATEPART(ISO_WEEK, CAST(FL AS date))\n               AND DATEPART(ISO_WEEK, DATEADD(DAY, -371, CAST(FL AS date))) =  DATEPART(ISO_WEEK, CAST(FL AS date))\n              THEN 371 ELSE 364 END AS N\n  FROM r1\n), rec AS (\n  -- Rekorddagen: den hela dag före vald period med högst försäljning\n  SELECT TOP 1 v.Dag, v.Forsaljning\n  FROM sitoo.vDagsforsaljning v CROSS JOIN r\n  WHERE v.Dag < r.D\n  ORDER BY v.Forsaljning DESC\n), h AS (\n  SELECT DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateLocal), 0) AS b, SUM(o.MoneyFinalNet) AS v\n  FROM sitoo.Orders o CROSS JOIN r CROSS JOIN rec\n  WHERE o.OrderDateLocal >= CAST(rec.Dag AS datetime2) AND o.OrderDateLocal < DATEADD(DAY, 1, CAST(rec.Dag AS datetime2))\n  GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateLocal), 0)\n)\nSELECT CAST(DATEADD(DAY, DATEDIFF(DAY, rec.Dag, r.D), h.b) AT TIME ZONE 'W. Europe Standard Time' AT TIME ZONE 'UTC' AS datetime2(0)) AS time,\n       SUM(h.v) OVER (ORDER BY h.b) AS [Rekorddagen]\nFROM h CROSS JOIN r CROSS JOIN rec\nORDER BY 1"
+        }
+      ],
+      "description": "Försäljning exkl. moms, ackumulerad per timme. Förra året och rekorddagen är flyttade till i dag så att kurvorna går att jämföra.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencySEK",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "I dag"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Förra året"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#8e8e8e"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    6,
+                    6
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Rekorddagen"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dot",
+                  "dash": [
+                    2,
+                    6
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Försäljning per timme",
+      "datasource": {
+        "type": "mssql",
+        "uid": "${DS_SITOO}"
+      },
+      "gridPos": {
+        "x": 14,
+        "y": 5,
+        "w": 10,
+        "h": 11
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "WITH r0 AS (\n  SELECT DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AS F,\n         DATEADD(SECOND, $__unixEpochTo(),   CAST('19700101' AS datetime2)) AS T\n), r1 AS (\n  SELECT F, T,\n         CAST(F AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS FL,\n         CAST(T AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS TL\n  FROM r0\n), r AS (\n  SELECT F, T, FL, TL, CAST(FL AS date) AS D,\n         CASE WHEN DATEPART(ISO_WEEK, DATEADD(DAY, -364, CAST(FL AS date))) <> DATEPART(ISO_WEEK, CAST(FL AS date))\n               AND DATEPART(ISO_WEEK, DATEADD(DAY, -371, CAST(FL AS date))) =  DATEPART(ISO_WEEK, CAST(FL AS date))\n              THEN 371 ELSE 364 END AS N\n  FROM r1\n), rec AS (\n  -- Rekorddagen: den hela dag före vald period med högst försäljning\n  SELECT TOP 1 v.Dag, v.Forsaljning\n  FROM sitoo.vDagsforsaljning v CROSS JOIN r\n  WHERE v.Dag < r.D\n  ORDER BY v.Forsaljning DESC\n), h AS (\n  SELECT DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateLocal), 0) AS b, SUM(o.MoneyFinalNet) AS v\n  FROM sitoo.Orders o CROSS JOIN r \n  WHERE o.OrderDateLocal >= r.FL AND o.OrderDateLocal < r.TL\n  GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateLocal), 0)\n)\nSELECT CAST(DATEADD(DAY, 0, h.b) AT TIME ZONE 'W. Europe Standard Time' AT TIME ZONE 'UTC' AS datetime2(0)) AS time,\n       h.v AS [I dag]\nFROM h CROSS JOIN r \nORDER BY 1"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "WITH r0 AS (\n  SELECT DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AS F,\n         DATEADD(SECOND, $__unixEpochTo(),   CAST('19700101' AS datetime2)) AS T\n), r1 AS (\n  SELECT F, T,\n         CAST(F AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS FL,\n         CAST(T AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS TL\n  FROM r0\n), r AS (\n  SELECT F, T, FL, TL, CAST(FL AS date) AS D,\n         CASE WHEN DATEPART(ISO_WEEK, DATEADD(DAY, -364, CAST(FL AS date))) <> DATEPART(ISO_WEEK, CAST(FL AS date))\n               AND DATEPART(ISO_WEEK, DATEADD(DAY, -371, CAST(FL AS date))) =  DATEPART(ISO_WEEK, CAST(FL AS date))\n              THEN 371 ELSE 364 END AS N\n  FROM r1\n), rec AS (\n  -- Rekorddagen: den hela dag före vald period med högst försäljning\n  SELECT TOP 1 v.Dag, v.Forsaljning\n  FROM sitoo.vDagsforsaljning v CROSS JOIN r\n  WHERE v.Dag < r.D\n  ORDER BY v.Forsaljning DESC\n), h AS (\n  SELECT DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateLocal), 0) AS b, SUM(o.MoneyFinalNet) AS v\n  FROM sitoo.Orders o CROSS JOIN r \n  WHERE o.OrderDateLocal >= DATEADD(DAY, -r.N, r.FL) AND o.OrderDateLocal < DATEADD(DAY, -r.N, r.TL)\n  GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateLocal), 0)\n)\nSELECT CAST(DATEADD(DAY, r.N, h.b) AT TIME ZONE 'W. Europe Standard Time' AT TIME ZONE 'UTC' AS datetime2(0)) AS time,\n       h.v AS [Förra året]\nFROM h CROSS JOIN r \nORDER BY 1"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "WITH r0 AS (\n  SELECT DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AS F,\n         DATEADD(SECOND, $__unixEpochTo(),   CAST('19700101' AS datetime2)) AS T\n), r1 AS (\n  SELECT F, T,\n         CAST(F AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS FL,\n         CAST(T AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS TL\n  FROM r0\n), r AS (\n  SELECT F, T, FL, TL, CAST(FL AS date) AS D,\n         CASE WHEN DATEPART(ISO_WEEK, DATEADD(DAY, -364, CAST(FL AS date))) <> DATEPART(ISO_WEEK, CAST(FL AS date))\n               AND DATEPART(ISO_WEEK, DATEADD(DAY, -371, CAST(FL AS date))) =  DATEPART(ISO_WEEK, CAST(FL AS date))\n              THEN 371 ELSE 364 END AS N\n  FROM r1\n), rec AS (\n  -- Rekorddagen: den hela dag före vald period med högst försäljning\n  SELECT TOP 1 v.Dag, v.Forsaljning\n  FROM sitoo.vDagsforsaljning v CROSS JOIN r\n  WHERE v.Dag < r.D\n  ORDER BY v.Forsaljning DESC\n), h AS (\n  SELECT DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateLocal), 0) AS b, SUM(o.MoneyFinalNet) AS v\n  FROM sitoo.Orders o CROSS JOIN r CROSS JOIN rec\n  WHERE o.OrderDateLocal >= CAST(rec.Dag AS datetime2) AND o.OrderDateLocal < DATEADD(DAY, 1, CAST(rec.Dag AS datetime2))\n  GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateLocal), 0)\n)\nSELECT CAST(DATEADD(DAY, DATEDIFF(DAY, rec.Dag, r.D), h.b) AT TIME ZONE 'W. Europe Standard Time' AT TIME ZONE 'UTC' AS datetime2(0)) AS time,\n       h.v AS [Rekorddagen]\nFROM h CROSS JOIN r CROSS JOIN rec\nORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencySEK",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "barAlignment": -1
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "I dag"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              },
+              {
+                "id": "custom.drawStyle",
+                "value": "bars"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Förra året"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#8e8e8e"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    6,
+                    6
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.drawStyle",
+                "value": "line"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Rekorddagen"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dot",
+                  "dash": [
+                    2,
+                    6
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.drawStyle",
+                "value": "line"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 9,
       "type": "stat",
       "title": "Snittkvitto (inkl. moms)",
       "datasource": {
@@ -358,10 +832,10 @@
         "uid": "${DS_SITOO}"
       },
       "gridPos": {
-        "x": 17,
-        "y": 0,
-        "w": 4,
-        "h": 5
+        "x": 0,
+        "y": 16,
+        "w": 6,
+        "h": 4
       },
       "targets": [
         {
@@ -373,7 +847,7 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT AVG(o.MoneyTotalGrossAll) AS value FROM sitoo.Orders o WHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2)) AND o.MoneyTotalGrossAll > 0"
+          "rawSql": "WITH r0 AS (\n  SELECT DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AS F,\n         DATEADD(SECOND, $__unixEpochTo(),   CAST('19700101' AS datetime2)) AS T\n), r1 AS (\n  SELECT F, T,\n         CAST(F AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS FL,\n         CAST(T AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS TL\n  FROM r0\n), r AS (\n  SELECT F, T, FL, TL, CAST(FL AS date) AS D,\n         CASE WHEN DATEPART(ISO_WEEK, DATEADD(DAY, -364, CAST(FL AS date))) <> DATEPART(ISO_WEEK, CAST(FL AS date))\n               AND DATEPART(ISO_WEEK, DATEADD(DAY, -371, CAST(FL AS date))) =  DATEPART(ISO_WEEK, CAST(FL AS date))\n              THEN 371 ELSE 364 END AS N\n  FROM r1\n), rec AS (\n  -- Rekorddagen: den hela dag före vald period med högst försäljning\n  SELECT TOP 1 v.Dag, v.Forsaljning\n  FROM sitoo.vDagsforsaljning v CROSS JOIN r\n  WHERE v.Dag < r.D\n  ORDER BY v.Forsaljning DESC\n)\nSELECT AVG(o.MoneyTotalGrossAll) AS value FROM sitoo.Orders o CROSS JOIN r WHERE o.OrderDateLocal >= r.FL AND o.OrderDateLocal < r.TL AND o.MoneyTotalGrossAll > 0"
         }
       ],
       "description": "",
@@ -409,24 +883,25 @@
         "graphMode": "none",
         "justifyMode": "center",
         "textMode": "value",
-        "orientation": "auto",
+        "orientation": "vertical",
         "wideLayout": true,
-        "showPercentChange": false
+        "showPercentChange": false,
+        "text": {}
       }
     },
     {
-      "id": 6,
+      "id": 10,
       "type": "stat",
-      "title": "Sålda artiklar",
+      "title": "Snittkvitto förra året",
       "datasource": {
         "type": "mssql",
         "uid": "${DS_SITOO}"
       },
       "gridPos": {
-        "x": 21,
-        "y": 0,
-        "w": 3,
-        "h": 5
+        "x": 6,
+        "y": 16,
+        "w": 6,
+        "h": 4
       },
       "targets": [
         {
@@ -438,7 +913,73 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT ISNULL(SUM(i.Quantity), 0) AS value\nFROM sitoo.OrderItems i JOIN sitoo.Orders o ON o.OrderId = i.OrderId\nWHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2)) AND i.Sku IS NOT NULL"
+          "rawSql": "WITH r0 AS (\n  SELECT DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AS F,\n         DATEADD(SECOND, $__unixEpochTo(),   CAST('19700101' AS datetime2)) AS T\n), r1 AS (\n  SELECT F, T,\n         CAST(F AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS FL,\n         CAST(T AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS TL\n  FROM r0\n), r AS (\n  SELECT F, T, FL, TL, CAST(FL AS date) AS D,\n         CASE WHEN DATEPART(ISO_WEEK, DATEADD(DAY, -364, CAST(FL AS date))) <> DATEPART(ISO_WEEK, CAST(FL AS date))\n               AND DATEPART(ISO_WEEK, DATEADD(DAY, -371, CAST(FL AS date))) =  DATEPART(ISO_WEEK, CAST(FL AS date))\n              THEN 371 ELSE 364 END AS N\n  FROM r1\n), rec AS (\n  -- Rekorddagen: den hela dag före vald period med högst försäljning\n  SELECT TOP 1 v.Dag, v.Forsaljning\n  FROM sitoo.vDagsforsaljning v CROSS JOIN r\n  WHERE v.Dag < r.D\n  ORDER BY v.Forsaljning DESC\n)\nSELECT AVG(o.MoneyTotalGrossAll) AS value FROM sitoo.Orders o CROSS JOIN r WHERE o.OrderDateLocal >= DATEADD(DAY, -r.N, r.FL) AND o.OrderDateLocal < DATEADD(DAY, -r.N, r.TL) AND o.MoneyTotalGrossAll > 0"
+        }
+      ],
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencySEK",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "orientation": "vertical",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "text": {}
+      }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Sålda artiklar",
+      "datasource": {
+        "type": "mssql",
+        "uid": "${DS_SITOO}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "WITH r0 AS (\n  SELECT DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AS F,\n         DATEADD(SECOND, $__unixEpochTo(),   CAST('19700101' AS datetime2)) AS T\n), r1 AS (\n  SELECT F, T,\n         CAST(F AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS FL,\n         CAST(T AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS TL\n  FROM r0\n), r AS (\n  SELECT F, T, FL, TL, CAST(FL AS date) AS D,\n         CASE WHEN DATEPART(ISO_WEEK, DATEADD(DAY, -364, CAST(FL AS date))) <> DATEPART(ISO_WEEK, CAST(FL AS date))\n               AND DATEPART(ISO_WEEK, DATEADD(DAY, -371, CAST(FL AS date))) =  DATEPART(ISO_WEEK, CAST(FL AS date))\n              THEN 371 ELSE 364 END AS N\n  FROM r1\n), rec AS (\n  -- Rekorddagen: den hela dag före vald period med högst försäljning\n  SELECT TOP 1 v.Dag, v.Forsaljning\n  FROM sitoo.vDagsforsaljning v CROSS JOIN r\n  WHERE v.Dag < r.D\n  ORDER BY v.Forsaljning DESC\n)\nSELECT ISNULL(SUM(i.Quantity), 0) AS value\nFROM sitoo.OrderItems i JOIN sitoo.Orders o ON o.OrderId = i.OrderId CROSS JOIN r\nWHERE o.OrderDateLocal >= r.FL AND o.OrderDateLocal < r.TL AND i.Sku IS NOT NULL"
         }
       ],
       "description": "",
@@ -474,24 +1015,25 @@
         "graphMode": "none",
         "justifyMode": "center",
         "textMode": "value",
-        "orientation": "auto",
+        "orientation": "vertical",
         "wideLayout": true,
-        "showPercentChange": false
+        "showPercentChange": false,
+        "text": {}
       }
     },
     {
-      "id": 7,
-      "type": "timeseries",
-      "title": "Ackumulerad försäljning – nu mot förra veckan",
+      "id": 12,
+      "type": "stat",
+      "title": "Kvitton förra året",
       "datasource": {
         "type": "mssql",
         "uid": "${DS_SITOO}"
       },
       "gridPos": {
-        "x": 0,
-        "y": 5,
-        "w": 12,
-        "h": 10
+        "x": 18,
+        "y": 16,
+        "w": 6,
+        "h": 4
       },
       "targets": [
         {
@@ -500,222 +1042,53 @@
             "type": "mssql",
             "uid": "${DS_SITOO}"
           },
-          "format": "time_series",
+          "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateUtc), 0) AS time,\n       SUM(SUM(o.MoneyFinalNet)) OVER (ORDER BY DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateUtc), 0)) AS [Nu]\nFROM sitoo.Orders o\nWHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2))\nGROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateUtc), 0)\nORDER BY 1"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "mssql",
-            "uid": "${DS_SITOO}"
-          },
-          "format": "time_series",
-          "rawQuery": true,
-          "editorMode": "code",
-          "rawSql": "SELECT DATEADD(HOUR, DATEDIFF(HOUR, 0, DATEADD(DAY, 7, o.OrderDateUtc)), 0) AS time,\n       SUM(SUM(o.MoneyFinalNet)) OVER (ORDER BY DATEADD(HOUR, DATEDIFF(HOUR, 0, DATEADD(DAY, 7, o.OrderDateUtc)), 0)) AS [Förra veckan]\nFROM sitoo.Orders o\nWHERE o.OrderDateUtc >= DATEADD(DAY, -7, DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2))) AND o.OrderDateUtc < DATEADD(DAY, -7, DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2)))\nGROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, DATEADD(DAY, 7, o.OrderDateUtc)), 0)\nORDER BY 1"
+          "rawSql": "WITH r0 AS (\n  SELECT DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AS F,\n         DATEADD(SECOND, $__unixEpochTo(),   CAST('19700101' AS datetime2)) AS T\n), r1 AS (\n  SELECT F, T,\n         CAST(F AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS FL,\n         CAST(T AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS TL\n  FROM r0\n), r AS (\n  SELECT F, T, FL, TL, CAST(FL AS date) AS D,\n         CASE WHEN DATEPART(ISO_WEEK, DATEADD(DAY, -364, CAST(FL AS date))) <> DATEPART(ISO_WEEK, CAST(FL AS date))\n               AND DATEPART(ISO_WEEK, DATEADD(DAY, -371, CAST(FL AS date))) =  DATEPART(ISO_WEEK, CAST(FL AS date))\n              THEN 371 ELSE 364 END AS N\n  FROM r1\n), rec AS (\n  -- Rekorddagen: den hela dag före vald period med högst försäljning\n  SELECT TOP 1 v.Dag, v.Forsaljning\n  FROM sitoo.vDagsforsaljning v CROSS JOIN r\n  WHERE v.Dag < r.D\n  ORDER BY v.Forsaljning DESC\n)\nSELECT COUNT(*) AS value FROM sitoo.Orders o CROSS JOIN r WHERE o.OrderDateLocal >= DATEADD(DAY, -r.N, r.FL) AND o.OrderDateLocal < DATEADD(DAY, -r.N, r.TL) AND o.MoneyTotalGrossAll > 0"
         }
       ],
-      "description": "Försäljning exkl. moms, ackumulerad per timme. Förra veckans kurva är flyttad en vecka framåt så att de går att jämföra.",
+      "description": "",
       "fieldConfig": {
         "defaults": {
-          "unit": "currencySEK",
+          "unit": "none",
           "decimals": 0,
           "color": {
-            "mode": "palette-classic"
+            "mode": "fixed",
+            "fixedColor": "text"
           },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 2,
-            "fillOpacity": 12,
-            "gradientMode": "opacity",
-            "showPoints": "never",
-            "spanNulls": true
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
           }
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Nu"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "green"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Förra veckan"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#8e8e8e"
-                }
-              },
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    6,
-                    6
-                  ]
-                }
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 0
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "orientation": "vertical",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "text": {}
       }
     },
     {
-      "id": 8,
-      "type": "timeseries",
-      "title": "Försäljning per timme",
-      "datasource": {
-        "type": "mssql",
-        "uid": "${DS_SITOO}"
-      },
-      "gridPos": {
-        "x": 12,
-        "y": 5,
-        "w": 12,
-        "h": 10
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "mssql",
-            "uid": "${DS_SITOO}"
-          },
-          "format": "time_series",
-          "rawQuery": true,
-          "editorMode": "code",
-          "rawSql": "SELECT DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateUtc), 0) AS time, SUM(o.MoneyFinalNet) AS [Nu]\nFROM sitoo.Orders o WHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2))\nGROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateUtc), 0) ORDER BY 1"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "mssql",
-            "uid": "${DS_SITOO}"
-          },
-          "format": "time_series",
-          "rawQuery": true,
-          "editorMode": "code",
-          "rawSql": "SELECT DATEADD(HOUR, DATEDIFF(HOUR, 0, DATEADD(DAY, 7, o.OrderDateUtc)), 0) AS time, SUM(o.MoneyFinalNet) AS [Förra veckan]\nFROM sitoo.Orders o WHERE o.OrderDateUtc >= DATEADD(DAY, -7, DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2))) AND o.OrderDateUtc < DATEADD(DAY, -7, DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2)))\nGROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, DATEADD(DAY, 7, o.OrderDateUtc)), 0) ORDER BY 1"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "currencySEK",
-          "decimals": 0,
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "bars",
-            "barAlignment": 0,
-            "lineWidth": 1,
-            "fillOpacity": 70,
-            "showPoints": "never"
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Nu"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "blue"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Förra veckan"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#8e8e8e"
-                }
-              },
-              {
-                "id": "custom.drawStyle",
-                "value": "line"
-              },
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    6,
-                    6
-                  ]
-                }
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 0
-              },
-              {
-                "id": "custom.lineInterpolation",
-                "value": "stepAfter"
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 9,
+      "id": 13,
       "type": "bargauge",
       "title": "Topp 10 produkter",
       "datasource": {
@@ -724,7 +1097,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 15,
+        "y": 20,
         "w": 10,
         "h": 11
       },
@@ -738,7 +1111,7 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT TOP 10 ISNULL(i.ProductName, i.Sku) AS Produkt, SUM(i.MoneyItemTotalNet) AS [Försäljning]\nFROM sitoo.OrderItems i JOIN sitoo.Orders o ON o.OrderId = i.OrderId\nWHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2)) AND i.Sku IS NOT NULL\nGROUP BY ISNULL(i.ProductName, i.Sku)\nORDER BY 2 DESC"
+          "rawSql": "WITH r0 AS (\n  SELECT DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AS F,\n         DATEADD(SECOND, $__unixEpochTo(),   CAST('19700101' AS datetime2)) AS T\n), r1 AS (\n  SELECT F, T,\n         CAST(F AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS FL,\n         CAST(T AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS TL\n  FROM r0\n), r AS (\n  SELECT F, T, FL, TL, CAST(FL AS date) AS D,\n         CASE WHEN DATEPART(ISO_WEEK, DATEADD(DAY, -364, CAST(FL AS date))) <> DATEPART(ISO_WEEK, CAST(FL AS date))\n               AND DATEPART(ISO_WEEK, DATEADD(DAY, -371, CAST(FL AS date))) =  DATEPART(ISO_WEEK, CAST(FL AS date))\n              THEN 371 ELSE 364 END AS N\n  FROM r1\n), rec AS (\n  -- Rekorddagen: den hela dag före vald period med högst försäljning\n  SELECT TOP 1 v.Dag, v.Forsaljning\n  FROM sitoo.vDagsforsaljning v CROSS JOIN r\n  WHERE v.Dag < r.D\n  ORDER BY v.Forsaljning DESC\n)\nSELECT TOP 10 ISNULL(i.ProductName, i.Sku) AS Produkt, SUM(i.MoneyItemTotalNet) AS [Försäljning]\nFROM sitoo.OrderItems i JOIN sitoo.Orders o ON o.OrderId = i.OrderId CROSS JOIN r\nWHERE o.OrderDateLocal >= r.FL AND o.OrderDateLocal < r.TL AND i.Sku IS NOT NULL\nGROUP BY ISNULL(i.ProductName, i.Sku)\nORDER BY 2 DESC"
         }
       ],
       "description": "Försäljning exkl. moms per produkt i vald period.",
@@ -770,7 +1143,7 @@
       }
     },
     {
-      "id": 10,
+      "id": 14,
       "type": "piechart",
       "title": "Betalsätt",
       "datasource": {
@@ -779,7 +1152,7 @@
       },
       "gridPos": {
         "x": 10,
-        "y": 15,
+        "y": 20,
         "w": 7,
         "h": 11
       },
@@ -793,7 +1166,7 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT p.Name AS Betalsatt, SUM(p.MoneyAmount) AS Belopp\nFROM sitoo.OrderPayments p JOIN sitoo.Orders o ON o.OrderId = p.OrderId\nWHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2))\nGROUP BY p.Name\nHAVING SUM(p.MoneyAmount) > 0\nORDER BY 2 DESC"
+          "rawSql": "WITH r0 AS (\n  SELECT DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AS F,\n         DATEADD(SECOND, $__unixEpochTo(),   CAST('19700101' AS datetime2)) AS T\n), r1 AS (\n  SELECT F, T,\n         CAST(F AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS FL,\n         CAST(T AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS TL\n  FROM r0\n), r AS (\n  SELECT F, T, FL, TL, CAST(FL AS date) AS D,\n         CASE WHEN DATEPART(ISO_WEEK, DATEADD(DAY, -364, CAST(FL AS date))) <> DATEPART(ISO_WEEK, CAST(FL AS date))\n               AND DATEPART(ISO_WEEK, DATEADD(DAY, -371, CAST(FL AS date))) =  DATEPART(ISO_WEEK, CAST(FL AS date))\n              THEN 371 ELSE 364 END AS N\n  FROM r1\n), rec AS (\n  -- Rekorddagen: den hela dag före vald period med högst försäljning\n  SELECT TOP 1 v.Dag, v.Forsaljning\n  FROM sitoo.vDagsforsaljning v CROSS JOIN r\n  WHERE v.Dag < r.D\n  ORDER BY v.Forsaljning DESC\n)\nSELECT p.Name AS Betalsatt, SUM(p.MoneyAmount) AS Belopp\nFROM sitoo.OrderPayments p JOIN sitoo.Orders o ON o.OrderId = p.OrderId CROSS JOIN r\nWHERE o.OrderDateLocal >= r.FL AND o.OrderDateLocal < r.TL\nGROUP BY p.Name\nHAVING SUM(p.MoneyAmount) > 0\nORDER BY 2 DESC"
         }
       ],
       "fieldConfig": {
@@ -833,7 +1206,7 @@
       }
     },
     {
-      "id": 11,
+      "id": 15,
       "type": "bargauge",
       "title": "Försäljning per lager",
       "datasource": {
@@ -842,7 +1215,7 @@
       },
       "gridPos": {
         "x": 17,
-        "y": 15,
+        "y": 20,
         "w": 7,
         "h": 11
       },
@@ -856,7 +1229,7 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT ISNULL(w.Name, CONCAT('Lager ', o.WarehouseId)) AS Lager, SUM(o.MoneyFinalNet) AS [Försäljning]\nFROM sitoo.Orders o\nLEFT JOIN sitoo.Warehouses w ON w.SiteId = o.EshopId AND w.WarehouseId = o.WarehouseId\nWHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2))\nGROUP BY ISNULL(w.Name, CONCAT('Lager ', o.WarehouseId))\nORDER BY 2 DESC"
+          "rawSql": "WITH r0 AS (\n  SELECT DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AS F,\n         DATEADD(SECOND, $__unixEpochTo(),   CAST('19700101' AS datetime2)) AS T\n), r1 AS (\n  SELECT F, T,\n         CAST(F AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS FL,\n         CAST(T AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS datetime2(0)) AS TL\n  FROM r0\n), r AS (\n  SELECT F, T, FL, TL, CAST(FL AS date) AS D,\n         CASE WHEN DATEPART(ISO_WEEK, DATEADD(DAY, -364, CAST(FL AS date))) <> DATEPART(ISO_WEEK, CAST(FL AS date))\n               AND DATEPART(ISO_WEEK, DATEADD(DAY, -371, CAST(FL AS date))) =  DATEPART(ISO_WEEK, CAST(FL AS date))\n              THEN 371 ELSE 364 END AS N\n  FROM r1\n), rec AS (\n  -- Rekorddagen: den hela dag före vald period med högst försäljning\n  SELECT TOP 1 v.Dag, v.Forsaljning\n  FROM sitoo.vDagsforsaljning v CROSS JOIN r\n  WHERE v.Dag < r.D\n  ORDER BY v.Forsaljning DESC\n)\nSELECT ISNULL(w.Name, CONCAT('Lager ', o.WarehouseId)) AS Lager, SUM(o.MoneyFinalNet) AS [Försäljning]\nFROM sitoo.Orders o CROSS JOIN r\nLEFT JOIN sitoo.Warehouses w ON w.SiteId = o.EshopId AND w.WarehouseId = o.WarehouseId\nWHERE o.OrderDateLocal >= r.FL AND o.OrderDateLocal < r.TL\nGROUP BY ISNULL(w.Name, CONCAT('Lager ', o.WarehouseId))\nORDER BY 2 DESC"
         }
       ],
       "fieldConfig": {
@@ -888,7 +1261,7 @@
       }
     },
     {
-      "id": 12,
+      "id": 16,
       "type": "table",
       "title": "Senaste köpen",
       "datasource": {
@@ -897,7 +1270,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 26,
+        "y": 31,
         "w": 14,
         "h": 12
       },
@@ -990,7 +1363,109 @@
       }
     },
     {
-      "id": 13,
+      "id": 17,
+      "type": "table",
+      "title": "Topp 10 försäljningsdagar",
+      "datasource": {
+        "type": "mssql",
+        "uid": "${DS_SITOO}"
+      },
+      "gridPos": {
+        "x": 14,
+        "y": 31,
+        "w": 10,
+        "h": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT TOP 10\n  CONCAT(CHOOSE(DATEDIFF(DAY, '19000101', Dag) % 7 + 1, 'Mån', 'Tis', 'Ons', 'Tor', 'Fre', 'Lör', 'Sön'), ' ', CONVERT(char(10), Dag, 120)) AS Dag,\n  DATEPART(ISO_WEEK, Dag) AS Vecka,\n  Kvitton,\n  Forsaljning AS [Försäljning]\nFROM sitoo.vDagsforsaljning\nORDER BY Forsaljning DESC"
+        }
+      ],
+      "description": "De tio dagarna med högst försäljning exkl. moms genom tiderna.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Försäljning"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencySEK"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Vecka"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Kvitton"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 18,
       "type": "table",
       "title": "Lågt lagersaldo",
       "datasource": {
@@ -998,10 +1473,10 @@
         "uid": "${DS_SITOO}"
       },
       "gridPos": {
-        "x": 14,
-        "y": 26,
-        "w": 10,
-        "h": 12
+        "x": 0,
+        "y": 43,
+        "w": 24,
+        "h": 10
       },
       "targets": [
         {
