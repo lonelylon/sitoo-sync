@@ -481,6 +481,55 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Orders_OrderDateLocal
 GO
 
 ------------------------------------------------------------------------------
+-- Försäljning per dag (svensk tid), förberäknad så att rapporter som letar efter
+-- rekorddagar inte behöver räkna igenom alla ordrar. Uppdateras av MergeOrders.
+------------------------------------------------------------------------------
+IF OBJECT_ID(N'sitoo.DailySales', N'U') IS NULL
+CREATE TABLE sitoo.DailySales (
+    Dag                  DATE          NOT NULL CONSTRAINT PK_DailySales PRIMARY KEY,
+    Forsaljning          DECIMAL(19,2) NOT NULL,
+    ForsaljningInklMoms  DECIMAL(19,2) NOT NULL,
+    Kvitton              INT           NOT NULL,
+    UpdatedUtc           DATETIME2(0)  NOT NULL
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_DailySales_Forsaljning' AND object_id = OBJECT_ID(N'sitoo.DailySales'))
+    CREATE INDEX IX_DailySales_Forsaljning ON sitoo.DailySales (Forsaljning DESC);
+GO
+
+-- Räknar om DailySales för dagarna @FromDay–@ToDay. Utan parametrar: alla dagar.
+CREATE OR ALTER PROCEDURE sitoo.RefreshDailySales
+    @FromDay DATE = NULL,
+    @ToDay   DATE = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @now DATETIME2(0) = SYSUTCDATETIME();
+    DECLARE @from DATETIME2(0) = ISNULL(CAST(@FromDay AS DATETIME2(0)), '19000101');
+    DECLARE @to   DATETIME2(0) = CASE WHEN @ToDay IS NULL THEN '99991230'
+                                      ELSE DATEADD(DAY, 1, CAST(@ToDay AS DATETIME2(0))) END;
+
+    MERGE sitoo.DailySales AS t
+    USING (
+        SELECT CAST(OrderDateLocal AS date) AS Dag,
+               SUM(ISNULL(MoneyFinalNet, 0))                           AS Forsaljning,
+               SUM(ISNULL(MoneyTotalGrossAll, 0))                      AS ForsaljningInklMoms,
+               SUM(CASE WHEN MoneyTotalGrossAll > 0 THEN 1 ELSE 0 END) AS Kvitton
+        FROM sitoo.Orders
+        WHERE OrderDateLocal >= @from AND OrderDateLocal < @to
+        GROUP BY CAST(OrderDateLocal AS date)
+    ) AS s
+        ON t.Dag = s.Dag
+    WHEN MATCHED THEN UPDATE SET
+        Forsaljning = s.Forsaljning, ForsaljningInklMoms = s.ForsaljningInklMoms,
+        Kvitton = s.Kvitton, UpdatedUtc = @now
+    WHEN NOT MATCHED THEN INSERT (Dag, Forsaljning, ForsaljningInklMoms, Kvitton, UpdatedUtc)
+        VALUES (s.Dag, s.Forsaljning, s.ForsaljningInklMoms, s.Kvitton, @now)
+    WHEN NOT MATCHED BY SOURCE AND t.Dag >= CAST(@from AS date) AND t.Dag < CAST(@to AS date) THEN DELETE;
+END;
+GO
+
+------------------------------------------------------------------------------
 -- MERGE-procedurer. Varje procedur tar emot en JSON-array direkt från Sitoo.
 -- Belopp och decimaltal tolkas med TRY_CONVERT så att ett oväntat värde
 -- blir NULL i stället för att stoppa hela synken.
@@ -904,6 +953,12 @@ BEGIN
     ) pj;
 
     COMMIT;
+
+    -- Försäljning per dag för de dagar som berördes
+    DECLARE @d1 DATE = (SELECT MIN(CAST(OrderDateLocal AS date)) FROM #src);
+    DECLARE @d2 DATE = (SELECT MAX(CAST(OrderDateLocal AS date)) FROM #src);
+    IF @d1 IS NOT NULL
+        EXEC sitoo.RefreshDailySales @FromDay = @d1, @ToDay = @d2;
     SELECT @rows AS AffectedRows;
 END;
 GO
@@ -1203,13 +1258,12 @@ GO
 
 CREATE OR ALTER VIEW sitoo.vDagsforsaljning
 AS
--- Försäljning per dag i svensk tid. Används bl.a. för rekorddagen i Grafana.
-SELECT
-    CAST(OrderDateLocal AS date)                                AS Dag,
-    SUM(MoneyFinalNet)                                          AS Forsaljning,
-    SUM(MoneyTotalGrossAll)                                     AS ForsaljningInklMoms,
-    SUM(CASE WHEN MoneyTotalGrossAll > 0 THEN 1 ELSE 0 END)     AS Kvitton
-FROM sitoo.Orders
-WHERE OrderDateLocal IS NOT NULL
-GROUP BY CAST(OrderDateLocal AS date);
+-- Försäljning per dag i svensk tid (förberäknad i sitoo.DailySales).
+SELECT Dag, Forsaljning, ForsaljningInklMoms, Kvitton
+FROM sitoo.DailySales;
+GO
+
+-- Första gången: fyll DailySales för all historik.
+IF NOT EXISTS (SELECT 1 FROM sitoo.DailySales) AND EXISTS (SELECT 1 FROM sitoo.Orders)
+    EXEC sitoo.RefreshDailySales;
 GO
