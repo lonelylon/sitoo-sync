@@ -88,7 +88,7 @@ ORDER BY 1
 
 Filen [`grafana/sitoo-forsaljning-live.json`](grafana/sitoo-forsaljning-live.json) är en färdig dashboard. Importera den under **Dashboards > New > Import** och välj din SQL Server-datakälla. Den jämför försäljningen med **samma veckodag i samma ISO-vecka förra året**, till exempel lördag vecka 28 2026 mot lördag vecka 28 2025, och med **rekorddagen**, den hela dag med högst försäljning genom tiderna. Den visar också ackumulerad försäljning och försäljning per timme, toppsäljare, betalsätt, försäljning per lager, de senaste köpen, de tio bästa dagarna och lågt lagersaldo. Den uppdateras varje minut.
 
-`sitoo.Orders.OrderDateLocal` är orderdatumet i svensk tid. Tabellen `sitoo.DailySales` (och vyn `sitoo.vDagsforsaljning`) har försäljningen per dag i svensk tid och uppdateras automatiskt när ordrar sparas.
+`sitoo.Orders.OrderDateLocal` är orderdatumet i svensk tid. Tabellen `sitoo.DailySales` (och vyn `sitoo.vDagsforsaljning`) har försäljningen per dag i svensk tid och uppdateras automatiskt när ordrar sparas. Den markerar också **readagar** (`ArReadag = 1`): dagar då minst 90 % av de sålda artiklarna har sålts med minst 30 % rabatt (`AndelRea`). Gränserna är standardvärden i proceduren `sitoo.RefreshDailySales`.
 
 ## Webbgränssnittet
 

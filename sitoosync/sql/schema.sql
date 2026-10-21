@@ -487,20 +487,40 @@ GO
 IF OBJECT_ID(N'sitoo.DailySales', N'U') IS NULL
 CREATE TABLE sitoo.DailySales (
     Dag                  DATE          NOT NULL CONSTRAINT PK_DailySales PRIMARY KEY,
-    Forsaljning          DECIMAL(19,2) NOT NULL,
+    Forsaljning          DECIMAL(19,2) NOT NULL,   -- exkl. moms
     ForsaljningInklMoms  DECIMAL(19,2) NOT NULL,
     Kvitton              INT           NOT NULL,
+    Artiklar             DECIMAL(19,3) NULL,       -- sålda artiklar (antal)
+    ReaArtiklar          DECIMAL(19,3) NULL,       -- varav sålda med minst @ReaRabatt rabatt
+    AndelRea             DECIMAL(9,4)  NULL,       -- ReaArtiklar / Artiklar
+    ArReadag             BIT           NULL,       -- 1 om AndelRea >= @ReaAndel
     UpdatedUtc           DATETIME2(0)  NOT NULL
 );
 GO
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_DailySales_Forsaljning' AND object_id = OBJECT_ID(N'sitoo.DailySales'))
-    CREATE INDEX IX_DailySales_Forsaljning ON sitoo.DailySales (Forsaljning DESC);
+-- Äldre versioner saknade rea-kolumnerna
+IF COL_LENGTH(N'sitoo.DailySales', N'ArReadag') IS NULL
+    ALTER TABLE sitoo.DailySales ADD
+        Artiklar    DECIMAL(19,3) NULL,
+        ReaArtiklar DECIMAL(19,3) NULL,
+        AndelRea    DECIMAL(9,4)  NULL,
+        ArReadag    BIT           NULL;
+GO
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_DailySales_Forsaljning' AND object_id = OBJECT_ID(N'sitoo.DailySales'))
+    DROP INDEX IX_DailySales_Forsaljning ON sitoo.DailySales;
 GO
 
--- Räknar om DailySales för dagarna @FromDay–@ToDay. Utan parametrar: alla dagar.
+-- Räknar om DailySales för dagarna @FromDay–@ToDay. Utan datum: alla dagar.
+--
+-- Readag: minst @ReaAndel (90 %) av dagens sålda artiklar har sålts med minst
+-- @ReaRabatt (30 %) rabatt. I Sitoo ligger en rabatt som en egen orderrad
+-- (orderitemtype 20) med samma artikelnummer som artikelraden (orderitemtype 10).
+-- Rabatter på hela köpet (rabattrader utan artikelnummer) fördelas på köpets
+-- artiklar efter belopp. Rader med belopp 0 (t.ex. in-/utloggning) räknas inte.
 CREATE OR ALTER PROCEDURE sitoo.RefreshDailySales
-    @FromDay DATE = NULL,
-    @ToDay   DATE = NULL
+    @FromDay   DATE = NULL,
+    @ToDay     DATE = NULL,
+    @ReaRabatt DECIMAL(9,4) = 0.30,
+    @ReaAndel  DECIMAL(9,4) = 0.90
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -508,23 +528,68 @@ BEGIN
     DECLARE @from DATETIME2(0) = ISNULL(CAST(@FromDay AS DATETIME2(0)), '19000101');
     DECLARE @to   DATETIME2(0) = CASE WHEN @ToDay IS NULL THEN '99991230'
                                       ELSE DATEADD(DAY, 1, CAST(@ToDay AS DATETIME2(0))) END;
+    -- Liten marginal för avrundning (t.ex. 21,88 av 43,75 kr)
+    DECLARE @limit DECIMAL(9,4) = @ReaRabatt - 0.005;
+
+    SELECT OrderId, CAST(OrderDateLocal AS date) AS Dag,
+           MoneyFinalNet, MoneyTotalGrossAll
+    INTO #o
+    FROM sitoo.Orders
+    WHERE OrderDateLocal >= @from AND OrderDateLocal < @to;
+
+    CREATE CLUSTERED INDEX IX_o ON #o (OrderId);
+
+    -- Artikelrader och rabattrader per order och artikelnummer
+    SELECT i.OrderId, o.Dag, NULLIF(i.Sku, N'') AS Sku,
+           SUM(CASE WHEN i.OrderItemType = 10 THEN ISNULL(i.Quantity, 0) ELSE 0 END)           AS Qty,
+           SUM(CASE WHEN i.OrderItemType = 10 THEN ISNULL(i.MoneyItemTotalNet, 0) ELSE 0 END)  AS P,
+           SUM(CASE WHEN i.OrderItemType = 20 THEN -ISNULL(i.MoneyItemTotalNet, 0) ELSE 0 END) AS D
+    INTO #l
+    FROM sitoo.OrderItems i
+    JOIN #o o ON o.OrderId = i.OrderId
+    GROUP BY i.OrderId, o.Dag, NULLIF(i.Sku, N'');
+
+    SELECT l.Dag,
+           SUM(l.Qty) AS Artiklar,
+           SUM(CASE WHEN (l.D + ISNULL(c.D * l.P / NULLIF(t.P, 0), 0)) / l.P >= @limit
+                    THEN l.Qty ELSE 0 END) AS ReaArtiklar
+    INTO #r
+    FROM #l l
+    -- Rabatter på hela köpet (utan artikelnummer)
+    LEFT JOIN (SELECT OrderId, SUM(D) AS D FROM #l WHERE Sku IS NULL GROUP BY OrderId) c
+           ON c.OrderId = l.OrderId
+    -- Köpets totala artikelbelopp, för att fördela köprabatten
+    LEFT JOIN (SELECT OrderId, SUM(P) AS P FROM #l WHERE Sku IS NOT NULL AND P > 0 AND Qty > 0 GROUP BY OrderId) t
+           ON t.OrderId = l.OrderId
+    WHERE l.Sku IS NOT NULL AND l.P > 0 AND l.Qty > 0
+    GROUP BY l.Dag;
 
     MERGE sitoo.DailySales AS t
     USING (
-        SELECT CAST(OrderDateLocal AS date) AS Dag,
-               SUM(ISNULL(MoneyFinalNet, 0))                           AS Forsaljning,
-               SUM(ISNULL(MoneyTotalGrossAll, 0))                      AS ForsaljningInklMoms,
-               SUM(CASE WHEN MoneyTotalGrossAll > 0 THEN 1 ELSE 0 END) AS Kvitton
-        FROM sitoo.Orders
-        WHERE OrderDateLocal >= @from AND OrderDateLocal < @to
-        GROUP BY CAST(OrderDateLocal AS date)
+        SELECT o.Dag,
+               SUM(ISNULL(o.MoneyFinalNet, 0))                             AS Forsaljning,
+               SUM(ISNULL(o.MoneyTotalGrossAll, 0))                        AS ForsaljningInklMoms,
+               SUM(CASE WHEN o.MoneyTotalGrossAll > 0 THEN 1 ELSE 0 END)   AS Kvitton,
+               MAX(r.Artiklar)                                             AS Artiklar,
+               MAX(r.ReaArtiklar)                                          AS ReaArtiklar
+        FROM #o o
+        LEFT JOIN #r r ON r.Dag = o.Dag
+        GROUP BY o.Dag
     ) AS s
         ON t.Dag = s.Dag
     WHEN MATCHED THEN UPDATE SET
-        Forsaljning = s.Forsaljning, ForsaljningInklMoms = s.ForsaljningInklMoms,
-        Kvitton = s.Kvitton, UpdatedUtc = @now
-    WHEN NOT MATCHED THEN INSERT (Dag, Forsaljning, ForsaljningInklMoms, Kvitton, UpdatedUtc)
-        VALUES (s.Dag, s.Forsaljning, s.ForsaljningInklMoms, s.Kvitton, @now)
+        Forsaljning = s.Forsaljning, ForsaljningInklMoms = s.ForsaljningInklMoms, Kvitton = s.Kvitton,
+        Artiklar = ISNULL(s.Artiklar, 0), ReaArtiklar = ISNULL(s.ReaArtiklar, 0),
+        AndelRea = CASE WHEN s.Artiklar > 0 THEN s.ReaArtiklar / s.Artiklar ELSE 0 END,
+        ArReadag = CASE WHEN s.Artiklar > 0 AND s.ReaArtiklar / s.Artiklar >= @ReaAndel THEN 1 ELSE 0 END,
+        UpdatedUtc = @now
+    WHEN NOT MATCHED THEN INSERT
+        (Dag, Forsaljning, ForsaljningInklMoms, Kvitton, Artiklar, ReaArtiklar, AndelRea, ArReadag, UpdatedUtc)
+        VALUES (s.Dag, s.Forsaljning, s.ForsaljningInklMoms, s.Kvitton,
+                ISNULL(s.Artiklar, 0), ISNULL(s.ReaArtiklar, 0),
+                CASE WHEN s.Artiklar > 0 THEN s.ReaArtiklar / s.Artiklar ELSE 0 END,
+                CASE WHEN s.Artiklar > 0 AND s.ReaArtiklar / s.Artiklar >= @ReaAndel THEN 1 ELSE 0 END,
+                @now)
     WHEN NOT MATCHED BY SOURCE AND t.Dag >= CAST(@from AS date) AND t.Dag < CAST(@to AS date) THEN DELETE;
 END;
 GO
@@ -1259,11 +1324,13 @@ GO
 CREATE OR ALTER VIEW sitoo.vDagsforsaljning
 AS
 -- Försäljning per dag i svensk tid (förberäknad i sitoo.DailySales).
-SELECT Dag, Forsaljning, ForsaljningInklMoms, Kvitton
+SELECT Dag, Forsaljning, ForsaljningInklMoms, Kvitton,
+       Artiklar, ReaArtiklar, AndelRea, ArReadag
 FROM sitoo.DailySales;
 GO
 
--- Första gången: fyll DailySales för all historik.
-IF NOT EXISTS (SELECT 1 FROM sitoo.DailySales) AND EXISTS (SELECT 1 FROM sitoo.Orders)
+-- Första gången, eller när rea-kolumnerna är nya: räkna om alla dagar.
+IF EXISTS (SELECT 1 FROM sitoo.Orders)
+   AND (NOT EXISTS (SELECT 1 FROM sitoo.DailySales) OR EXISTS (SELECT 1 FROM sitoo.DailySales WHERE ArReadag IS NULL))
     EXEC sitoo.RefreshDailySales;
 GO
