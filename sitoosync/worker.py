@@ -130,32 +130,32 @@ class SyncWorker(threading.Thread):
         self.tick_seconds = tick_seconds
         self.status = WorkerStatus()
         self._wake = threading.Event()
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
         self._requested: set[str] = set()
-        self._lock = threading.Lock()
+        self._req_lock = threading.Lock()
         self._loaded_version = -1
         self._ctx: Context | None = None
 
     # -------------------------------------------------- styrning från webben
     def request_run(self, job_name: str) -> None:
-        with self._lock:
+        with self._req_lock:
             self._requested.add(job_name)
         self._wake.set()
 
     def requested(self) -> set[str]:
-        with self._lock:
+        with self._req_lock:
             return set(self._requested)
 
     def wake(self) -> None:
         self._wake.set()
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
         self._wake.set()
 
     # -------------------------------------------------- huvudloop
     def run(self) -> None:
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             try:
                 self._tick()
             except Exception as err:  # noqa: BLE001
@@ -216,14 +216,14 @@ class SyncWorker(threading.Thread):
         ctx = self._ctx
         self.status.error = None
         for job in self.status.jobs:
-            if self._stop.is_set() or self._loaded_version != self.store.version:
+            if self._stop_event.is_set() or self._loaded_version != self.store.version:
                 return
-            with self._lock:
+            with self._req_lock:
                 forced = job.name in self._requested
             if not forced and self.store.paused:
                 continue
             if forced or is_due(job, ctx.db, ctx.cfg.retry_after_error_minutes, utcnow()):
-                with self._lock:
+                with self._req_lock:
                     self._requested.discard(job.name)
                 self.status.state = "kör"
                 self.status.current_job = job.name
