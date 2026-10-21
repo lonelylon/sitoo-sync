@@ -84,6 +84,10 @@ GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, OrderDateUtc), 0)
 ORDER BY 1
 ```
 
+### Färdig dashboard
+
+Filen [`grafana/sitoo-forsaljning-live.json`](grafana/sitoo-forsaljning-live.json) är en färdig dashboard. Importera den under **Dashboards > New > Import** och välj din SQL Server-datakälla. Den visar försäljning, kvitton, snittkvitto och sålda artiklar jämfört med samma tid förra veckan, ackumulerad försäljning och försäljning per timme, toppsäljare, betalsätt, försäljning per lager, de senaste köpen och lågt lagersaldo. Den uppdateras varje minut.
+
 ## Webbgränssnittet
 
 - **Översikt:** status per jobb, senaste och nästa körning, fel i klartext, antal rader per tabell, **Kör nu**, **Pausa/Starta** och **Hämta om allt** per datatyp.

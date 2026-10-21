@@ -1,0 +1,1084 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_SITOO",
+      "label": "SitooSync (SQL Server)",
+      "description": "",
+      "type": "datasource",
+      "pluginId": "mssql",
+      "pluginName": "Microsoft SQL Server"
+    }
+  ],
+  "__requires": [
+    {
+      "type": "datasource",
+      "id": "mssql",
+      "name": "Microsoft SQL Server",
+      "version": "1.0.0"
+    },
+    {
+      "type": "panel",
+      "id": "stat",
+      "name": "Stat",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "timeseries",
+      "name": "Time series",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "bargauge",
+      "name": "Bar gauge",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "piechart",
+      "name": "Pie chart",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "table",
+      "name": "Table",
+      "version": ""
+    }
+  ],
+  "title": "Sitoo – försäljning live",
+  "uid": "sitoo-sales-live",
+  "description": "Försäljning från Sitoo via sitoo-sync. Uppdateras varje minut.",
+  "tags": [
+    "sitoo",
+    "försäljning"
+  ],
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now/d",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "1h"
+    ]
+  },
+  "timezone": "browser",
+  "weekStart": "monday",
+  "refresh": "1m",
+  "schemaVersion": 39,
+  "version": 1,
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Försäljning (exkl. moms)",
+      "datasource": {
+        "type": "mssql",
+        "uid": "${DS_SITOO}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 5,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT ISNULL(SUM(o.MoneyFinalNet), 0) AS value FROM sitoo.Orders o WHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2))"
+        }
+      ],
+      "description": "Summa av ordrarnas belopp exkl. moms i vald period. Returer räknas av.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencySEK",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Samma tid förra veckan",
+      "datasource": {
+        "type": "mssql",
+        "uid": "${DS_SITOO}"
+      },
+      "gridPos": {
+        "x": 5,
+        "y": 0,
+        "w": 4,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT ISNULL(SUM(o.MoneyFinalNet), 0) AS value FROM sitoo.Orders o WHERE o.OrderDateUtc >= DATEADD(DAY, -7, DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2))) AND o.OrderDateUtc < DATEADD(DAY, -7, DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2)))"
+        }
+      ],
+      "description": "Samma period, en vecka tidigare.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencySEK",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Förändring mot förra veckan",
+      "datasource": {
+        "type": "mssql",
+        "uid": "${DS_SITOO}"
+      },
+      "gridPos": {
+        "x": 9,
+        "y": 0,
+        "w": 4,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT CASE WHEN f.v = 0 THEN NULL ELSE (n.v - f.v) / ABS(f.v) * 100 END AS value\nFROM (SELECT ISNULL(SUM(o.MoneyFinalNet), 0) AS v FROM sitoo.Orders o WHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2))) n\nCROSS JOIN (SELECT ISNULL(SUM(o.MoneyFinalNet), 0) AS v FROM sitoo.Orders o WHERE o.OrderDateUtc >= DATEADD(DAY, -7, DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2))) AND o.OrderDateUtc < DATEADD(DAY, -7, DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2)))) f"
+        }
+      ],
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": -5
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Kvitton",
+      "datasource": {
+        "type": "mssql",
+        "uid": "${DS_SITOO}"
+      },
+      "gridPos": {
+        "x": 13,
+        "y": 0,
+        "w": 4,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT COUNT(*) AS value FROM sitoo.Orders o WHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2)) AND o.MoneyTotalGrossAll > 0"
+        }
+      ],
+      "description": "Antal köp (returer ej medräknade).",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Snittkvitto (inkl. moms)",
+      "datasource": {
+        "type": "mssql",
+        "uid": "${DS_SITOO}"
+      },
+      "gridPos": {
+        "x": 17,
+        "y": 0,
+        "w": 4,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT AVG(o.MoneyTotalGrossAll) AS value FROM sitoo.Orders o WHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2)) AND o.MoneyTotalGrossAll > 0"
+        }
+      ],
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencySEK",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "purple",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Sålda artiklar",
+      "datasource": {
+        "type": "mssql",
+        "uid": "${DS_SITOO}"
+      },
+      "gridPos": {
+        "x": 21,
+        "y": 0,
+        "w": 3,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT ISNULL(SUM(i.Quantity), 0) AS value\nFROM sitoo.OrderItems i JOIN sitoo.Orders o ON o.OrderId = i.OrderId\nWHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2)) AND i.Sku IS NOT NULL"
+        }
+      ],
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "yellow"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "yellow",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Ackumulerad försäljning – nu mot förra veckan",
+      "datasource": {
+        "type": "mssql",
+        "uid": "${DS_SITOO}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateUtc), 0) AS time,\n       SUM(SUM(o.MoneyFinalNet)) OVER (ORDER BY DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateUtc), 0)) AS [Nu]\nFROM sitoo.Orders o\nWHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2))\nGROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateUtc), 0)\nORDER BY 1"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT DATEADD(HOUR, DATEDIFF(HOUR, 0, DATEADD(DAY, 7, o.OrderDateUtc)), 0) AS time,\n       SUM(SUM(o.MoneyFinalNet)) OVER (ORDER BY DATEADD(HOUR, DATEDIFF(HOUR, 0, DATEADD(DAY, 7, o.OrderDateUtc)), 0)) AS [Förra veckan]\nFROM sitoo.Orders o\nWHERE o.OrderDateUtc >= DATEADD(DAY, -7, DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2))) AND o.OrderDateUtc < DATEADD(DAY, -7, DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2)))\nGROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, DATEADD(DAY, 7, o.OrderDateUtc)), 0)\nORDER BY 1"
+        }
+      ],
+      "description": "Försäljning exkl. moms, ackumulerad per timme. Förra veckans kurva är flyttad en vecka framåt så att de går att jämföra.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencySEK",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Nu"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Förra veckan"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#8e8e8e"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    6,
+                    6
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Försäljning per timme",
+      "datasource": {
+        "type": "mssql",
+        "uid": "${DS_SITOO}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateUtc), 0) AS time, SUM(o.MoneyFinalNet) AS [Nu]\nFROM sitoo.Orders o WHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2))\nGROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, o.OrderDateUtc), 0) ORDER BY 1"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT DATEADD(HOUR, DATEDIFF(HOUR, 0, DATEADD(DAY, 7, o.OrderDateUtc)), 0) AS time, SUM(o.MoneyFinalNet) AS [Förra veckan]\nFROM sitoo.Orders o WHERE o.OrderDateUtc >= DATEADD(DAY, -7, DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2))) AND o.OrderDateUtc < DATEADD(DAY, -7, DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2)))\nGROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, DATEADD(DAY, 7, o.OrderDateUtc)), 0) ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencySEK",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 70,
+            "showPoints": "never"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Nu"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Förra veckan"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#8e8e8e"
+                }
+              },
+              {
+                "id": "custom.drawStyle",
+                "value": "line"
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    6,
+                    6
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineInterpolation",
+                "value": "stepAfter"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "bargauge",
+      "title": "Topp 10 produkter",
+      "datasource": {
+        "type": "mssql",
+        "uid": "${DS_SITOO}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 15,
+        "w": 10,
+        "h": 11
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT TOP 10 ISNULL(i.ProductName, i.Sku) AS Produkt, SUM(i.MoneyItemTotalNet) AS [Försäljning]\nFROM sitoo.OrderItems i JOIN sitoo.Orders o ON o.OrderId = i.OrderId\nWHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2)) AND i.Sku IS NOT NULL\nGROUP BY ISNULL(i.ProductName, i.Sku)\nORDER BY 2 DESC"
+        }
+      ],
+      "description": "Försäljning exkl. moms per produkt i vald period.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencySEK",
+          "decimals": 0,
+          "min": 0,
+          "color": {
+            "mode": "continuous-BlYlRd"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true,
+        "valueMode": "color",
+        "namePlacement": "top",
+        "sizing": "auto"
+      }
+    },
+    {
+      "id": 10,
+      "type": "piechart",
+      "title": "Betalsätt",
+      "datasource": {
+        "type": "mssql",
+        "uid": "${DS_SITOO}"
+      },
+      "gridPos": {
+        "x": 10,
+        "y": 15,
+        "w": 7,
+        "h": 11
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT p.Name AS Betalsatt, SUM(p.MoneyAmount) AS Belopp\nFROM sitoo.OrderPayments p JOIN sitoo.Orders o ON o.OrderId = p.OrderId\nWHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2))\nGROUP BY p.Name\nHAVING SUM(p.MoneyAmount) > 0\nORDER BY 2 DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencySEK",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "pieType": "donut",
+        "displayLabels": [
+          "percent"
+        ],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "bargauge",
+      "title": "Försäljning per lager",
+      "datasource": {
+        "type": "mssql",
+        "uid": "${DS_SITOO}"
+      },
+      "gridPos": {
+        "x": 17,
+        "y": 15,
+        "w": 7,
+        "h": 11
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT ISNULL(w.Name, CONCAT('Lager ', o.WarehouseId)) AS Lager, SUM(o.MoneyFinalNet) AS [Försäljning]\nFROM sitoo.Orders o\nLEFT JOIN sitoo.Warehouses w ON w.SiteId = o.EshopId AND w.WarehouseId = o.WarehouseId\nWHERE o.OrderDateUtc >= DATEADD(SECOND, $__unixEpochFrom(), CAST('19700101' AS datetime2)) AND o.OrderDateUtc < DATEADD(SECOND, $__unixEpochTo(), CAST('19700101' AS datetime2))\nGROUP BY ISNULL(w.Name, CONCAT('Lager ', o.WarehouseId))\nORDER BY 2 DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencySEK",
+          "decimals": 0,
+          "min": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true,
+        "valueMode": "color",
+        "namePlacement": "top",
+        "sizing": "auto"
+      }
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "Senaste köpen",
+      "datasource": {
+        "type": "mssql",
+        "uid": "${DS_SITOO}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 26,
+        "w": 14,
+        "h": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT TOP 25\n  o.OrderDateUtc AS Tid,\n  o.OrderId AS [Order],\n  ISNULL(w.Name, CONCAT('Lager ', o.WarehouseId)) AS Lager,\n  (SELECT SUM(i.Quantity) FROM sitoo.OrderItems i WHERE i.OrderId = o.OrderId AND i.Sku IS NOT NULL) AS Artiklar,\n  (SELECT STRING_AGG(p.Name, ', ') FROM sitoo.OrderPayments p WHERE p.OrderId = o.OrderId) AS Betalning,\n  o.MoneyTotalGrossAll AS [Belopp inkl. moms]\nFROM sitoo.Orders o\nLEFT JOIN sitoo.Warehouses w ON w.SiteId = o.EshopId AND w.WarehouseId = o.WarehouseId\nORDER BY o.OrderId DESC"
+        }
+      ],
+      "description": "De 25 senaste ordrarna oavsett vald period. Negativa belopp är returer.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tid"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsLocal"
+              },
+              {
+                "id": "custom.width",
+                "value": 170
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Belopp inkl. moms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencySEK"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "text",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "table",
+      "title": "Lågt lagersaldo",
+      "datasource": {
+        "type": "mssql",
+        "uid": "${DS_SITOO}"
+      },
+      "gridPos": {
+        "x": 14,
+        "y": 26,
+        "w": 10,
+        "h": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "${DS_SITOO}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT TOP 50 Lager, Produkt, Sku, Tillgangligt AS [Tillgängligt]\nFROM sitoo.vLagersaldo\nWHERE Tillgangligt <= 2 AND Produkt IS NOT NULL\nORDER BY Tillgangligt, Produkt"
+        }
+      ],
+      "description": "Artiklar med högst 2 tillgängliga i lager.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tillgängligt"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.width",
+                "value": 120
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 1
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 2
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    }
+  ]
+}
