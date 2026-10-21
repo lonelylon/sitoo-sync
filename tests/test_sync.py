@@ -396,7 +396,7 @@ class EnrichTests(unittest.TestCase):
         self.db.calls.clear()
 
     def _new_order(self, **kw):
-        order = {"orderid": 500, "eshopid": 1, "orderdate": 1_800_000_000, "warehouseid": 10,
+        order = {"orderid": 500, "eshopid": 1, "orderdate": int(time.time()) - 60, "warehouseid": 10,
                  "userid_staff": "{U1}",
                  "orderitems": [{"productid": 3, "sku": "SKU3", "quantity": 1}]}
         order.update(kw)
@@ -457,6 +457,16 @@ class EnrichTests(unittest.TestCase):
         self.assertIn(500, self.db.tables["Orders"])
         self.assertEqual(self.db.get_state("orders:1")[0], 500)
         self.assertIn("{PERSONAL}", self.db.tables["Users"])   # övriga steg körs ändå
+
+    def test_resumed_history_is_not_enriched(self):
+        # Som när en avbruten första hämtning fortsätter efter en uppdatering: markören finns,
+        # men ordrarna som kommer är gamla.
+        self._first_load()
+        self._new_order(orderdate=1_700_000_000, productid=None,
+                        orderitems=[{"productid": 999, "sku": "NY1"}])
+        J.sync_orders(self.ctx)
+        self.assertIn(500, self.db.tables["Orders"])
+        self.assertEqual({r[0].rsplit("/", 1)[-1] for r in self.fake.requests}, {"orders"})
 
     def test_enrich_can_be_disabled(self):
         self._first_load()

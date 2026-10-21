@@ -179,14 +179,18 @@ def sync_orders(ctx: Context) -> int:
         highest = last or 0
         count = 0
         first_load = not last
+        recent_from = now_ts() - ENRICH_MAX_AGE_SECONDS
         for page in ctx.api.pages("/orders", params):
             rows += ctx.db.exec_proc("MergeOrders", Json=dumps(page))
             count += len(page)
             highest = max([highest] + [int(o.get("orderid") or 0) for o in page])
             ctx.db.set_value(key, highest)   # spara efter varje sida, så en stor första hämtning kan återupptas
-            # Vid första hämtningen av all historik sköts kompletteringen av de vanliga jobben.
+            # Bara färska ordrar kompletteras. Historik (första hämtningen, eller en hämtning som
+            # återupptas efter omstart) sköts av de vanliga jobben för produkter, lager och personer.
             if ctx.cfg.enrich_orders and not first_load:
-                rows += enrich_after_orders(ctx, site, page)
+                recent = [o for o in page if int(o.get("orderdate") or 0) >= recent_from]
+                if recent:
+                    rows += enrich_after_orders(ctx, site, recent)
         if count:
             log.info("Site %s: %s nya ordrar", site, count)
         else:
@@ -195,6 +199,7 @@ def sync_orders(ctx: Context) -> int:
 
 
 # ------------------------------------------------------- komplettering
+ENRICH_MAX_AGE_SECONDS = 2 * 86400   # ordrar äldre än så kompletteras inte
 SKU_CHUNK = 40   # antal artikelnummer per anrop (håller URL:en kort)
 ID_CHUNK = 50
 
