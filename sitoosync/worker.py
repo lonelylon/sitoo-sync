@@ -46,7 +46,14 @@ def next_run(job: Job, last_attempt: datetime | None, last_success: datetime | N
              retry_minutes: int) -> datetime | None:
     """När jobbet ska köras nästa gång. None = så snart som möjligt."""
     if last_attempt and (last_success is None or last_attempt > last_success):
-        return last_attempt + timedelta(seconds=min(retry_minutes * 60, job.interval_sec))
+        # Misslyckat: täta jobb försöker igen enligt sitt schema, övriga tidigast efter
+        # retry_minutes och högst så ofta som sitt vanliga schema. Ett jobb som Sitoo
+        # svarar fel på stör då inte de andra i onödan.
+        if job.quiet:
+            wait = job.interval_sec
+        else:
+            wait = max(retry_minutes * 60, job.interval_sec)
+        return last_attempt + timedelta(seconds=wait)
     if last_success is None:
         return None
     return last_success + timedelta(seconds=job.interval_sec)
@@ -117,6 +124,7 @@ class WorkerStatus:
     current_job: str | None = None
     current_started: datetime | None = None
     error: str | None = None
+    note: str | None = None          # t.ex. "Väntar på Sitoo (HTTP 500) i 60 s"
     jobs: list[Job] = field(default_factory=list)
 
 
@@ -202,7 +210,9 @@ class SyncWorker(threading.Thread):
         self.status.state = "uppdaterar databasen"
         log.info("Uppdaterar databasschemat (första starten efter en uppdatering kan ta några minuter)")
         db.apply_schema()
-        self._ctx = Context(cfg=cfg, api=self.api_factory(cfg), db=db, checkpoint=self._checkpoint)
+        api = self.api_factory(cfg)
+        api.on_wait = self._on_wait
+        self._ctx = Context(cfg=cfg, api=api, db=db, checkpoint=self._checkpoint)
         # Täta jobb (nya ordrar) först i varje varv
         self.status.jobs = sorted(build_jobs(cfg), key=lambda j: not j.quiet)
         self.status.error = None
@@ -247,6 +257,9 @@ class SyncWorker(threading.Thread):
         finally:
             self.status.current_job, self.status.current_started = previous
         return True
+
+    def _on_wait(self, text: str | None) -> None:
+        self.status.note = text
 
     def _checkpoint(self) -> None:
         """Anropas mellan sidorna i långa jobb: kör de täta jobben (nya ordrar) om de är på tur.

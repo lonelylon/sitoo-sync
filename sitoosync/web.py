@@ -193,7 +193,7 @@ class WebApp:
         self.db_factory = db_factory
         self.sitoo_factory = sitoo_factory or (lambda v: SitooClient(
             v["sitoo_base_url"], v["sitoo_account_id"], v["sitoo_api_id"], v["sitoo_api_password"],
-            timeout=20, max_retries=0))
+            timeout=20, max_retries=0, max_error_retries=0))
         self.sessions: dict[str, dict] = {}
         self._lock = threading.Lock()
 
@@ -491,6 +491,8 @@ class RequestHandler(BaseHTTPRequestHandler):
         else:
             badge = '<span class="badge b-ok">Igång</span>'
 
+        if st.note:
+            badge += f' <span class="badge b-warn">{esc(st.note)}</span>'
         csrf = self._csrf_field()
         if paused:
             toggle = f'<form class="inline" method="post" action="/starta">{csrf}<button class="primary">Starta synken</button></form>'

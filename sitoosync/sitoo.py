@@ -35,8 +35,9 @@ class SitooClient:
         api_id: str,
         password: str,
         page_size: int = 100,
-        timeout: int = 300,
+        timeout: int = 120,
         max_retries: int = 8,
+        max_error_retries: int = 2,
         sleep: Callable[[float], None] = time.sleep,
     ):
         self.root = f"{base_url.rstrip('/')}/accounts/{account_id}"
@@ -48,9 +49,19 @@ class SitooClient:
         }
         self.page_size = page_size
         self.timeout = timeout
-        self.max_retries = max_retries
+        self.max_retries = max_retries            # för 429 (vänta tills Sitoo släpper)
+        self.max_error_retries = max_error_retries  # för serverfel och nätverksfel
         self._sleep = sleep
         self.request_count = 0
+        # Anropas med en text när klienten väntar på Sitoo, och med None när den är klar.
+        self.on_wait: Callable[[str | None], None] | None = None
+
+    def _notify(self, text: str | None) -> None:
+        if self.on_wait:
+            try:
+                self.on_wait(text)
+            except Exception:  # noqa: BLE001
+                pass
 
     # ------------------------------------------------------------------ http
     def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
@@ -60,7 +71,14 @@ class SitooClient:
             if clean:
                 url += "?" + urllib.parse.urlencode(clean, safe=",")
 
-        attempt = 0
+        try:
+            return self._get(path, url)
+        finally:
+            self._notify(None)
+
+    def _get(self, path: str, url: str) -> Any:
+        attempt = 0          # 429
+        errors = 0           # serverfel och nätverksfel
         while True:
             attempt += 1
             self.request_count += 1
@@ -73,27 +91,36 @@ class SitooClient:
             except urllib.error.HTTPError as err:
                 body = _safe_body(err)
                 request_id = err.headers.get("Sitoo-Request-ID") if err.headers else None
-                retryable = err.code == 429 or err.code >= 500
-                if not retryable or attempt > self.max_retries:
+                if err.code >= 500:
+                    errors += 1
+                retryable = (err.code == 429 and attempt <= self.max_retries) or \
+                            (err.code >= 500 and errors <= self.max_error_retries)
+                if not retryable:
                     raise SitooError(
                         f"Sitoo svarade HTTP {err.code} på {path}: {body[:500]}"
                         + (f" (Sitoo-Request-ID {request_id})" if request_id else ""),
                         status=err.code,
                         request_id=request_id,
                     ) from None
-                wait = self._wait_seconds(err, attempt)
+                wait = self._wait_seconds(err, errors if err.code >= 500 else attempt)
+                limit = self.max_error_retries if err.code >= 500 else self.max_retries
+                tries = errors if err.code >= 500 else attempt
                 log.warning(
                     "Sitoo HTTP %s på %s, väntar %ss (försök %s/%s)%s",
-                    err.code, path, wait, attempt, self.max_retries,
+                    err.code, path, wait, tries, limit,
                     f" Sitoo-Request-ID {request_id}" if request_id else "",
                 )
+                self._notify(f"Väntar på Sitoo (HTTP {err.code}) i {wait} s, försök {tries}/{limit}")
                 self._sleep(wait)
 
             except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as err:
-                if attempt > self.max_retries:
+                errors += 1
+                if errors > self.max_error_retries:
                     raise SitooError(f"Kunde inte nå Sitoo ({path}): {err}") from None
-                wait = min(30 * attempt, 600)
-                log.warning("Nätverksfel mot Sitoo (%s), väntar %ss (försök %s/%s)", err, wait, attempt, self.max_retries)
+                wait = 30 * errors
+                log.warning("Nätverksfel mot Sitoo på %s (%s), väntar %ss (försök %s/%s)",
+                            path, err, wait, errors, self.max_error_retries)
+                self._notify(f"Nätverksfel mot Sitoo, väntar {wait} s, försök {errors}/{self.max_error_retries}")
                 self._sleep(wait)
 
     @staticmethod

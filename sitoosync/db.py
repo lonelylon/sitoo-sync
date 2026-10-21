@@ -221,6 +221,12 @@ class Database:
         cur.execute(sql, args)
         return {cast(r[0]) for r in cur.fetchall()}
 
+    def oldest_order_ts(self) -> int | None:
+        cur = self.conn.cursor()
+        cur.execute("SELECT DATEDIFF_BIG(SECOND, '19700101', MIN(OrderDateUtc)) FROM sitoo.Orders")
+        row = cur.fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+
     # ------------------------------------------------------------ webbgränssnitt
     def job_overview(self) -> dict[str, dict]:
         cur = self.conn.cursor()

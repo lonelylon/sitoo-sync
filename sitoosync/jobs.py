@@ -315,30 +315,54 @@ def refresh_recent_orders(ctx: Context) -> int:
     return rows
 
 
+ZREPORT_WINDOW_SECONDS = 30 * 86400   # z-rapporter hämtas en månad åt gången
+
+
+def _zreports_start(ctx: Context) -> int:
+    """Var första hämtningen börjar: äldsta ordern i databasen, annars inställt orderdatum, annars 5 år bakåt."""
+    try:
+        oldest = ctx.db.oldest_order_ts()
+    except Exception:  # noqa: BLE001
+        oldest = None
+    if oldest:
+        return max(0, oldest - 86400)
+    configured = _orders_from_date_ts(ctx.cfg)
+    if configured:
+        return configured
+    return now_ts() - 5 * 365 * 86400
+
+
 def sync_zreports(ctx: Context) -> int:
-    """Z-rapporter per kassa. Bläddras med dateadded (max 500 per anrop)."""
+    """Z-rapporter per kassa, en månad åt gången (Sitoo ger högst 500 per anrop).
+
+    Markören är den tidpunkt (dateadded) som nästa hämtning börjar från.
+    """
     key = "zreports"
     last, _ = ctx.db.get_state(key)
     sites = ",".join(str(s) for s in ctx.cfg.site_ids)
-    date_from = last or 0
+    date_from = last if last else _zreports_start(ctx)
+    end = now_ts()
     rows = 0
     count = 0
-    while True:
-        data = ctx.api.get("/pos-z-reports", {"eshopid": sites, "dateaddedfrom": date_from}) or []
+    while date_from <= end:
+        date_to = min(date_from + ZREPORT_WINDOW_SECONDS, end)
+        data = ctx.api.get("/pos-z-reports", {"eshopid": sites, "dateaddedfrom": date_from,
+                                               "dateaddedto": date_to}) or []
         if isinstance(data, dict):  # om Sitoo någon gång lindar in svaret
             data = data.get("items") or []
-        if not data:
-            break
-        rows += ctx.db.exec_proc("MergeZReports", Json=dumps(data))
-        count += len(data)
-        newest = max(int(z.get("dateadded") or 0) for z in data)
-        ctx.db.set_value(key, newest)
-        if len(data) < ZREPORT_MAX_PER_CALL:
-            break
+        if data:
+            rows += ctx.db.exec_proc("MergeZReports", Json=dumps(data))
+            count += len(data)
+        if len(data) >= ZREPORT_MAX_PER_CALL:
+            # Fönstret har fler än 500: fortsätt från senaste dateadded (inklusive) i samma fönster.
+            newest = max(int(z.get("dateadded") or 0) for z in data)
+            date_from = newest if newest > date_from else date_from + 1
+        else:
+            date_from = date_to + 1
+        ctx.db.set_value(key, min(date_from, end))
         ctx.checkpoint()
-        # dateaddedfrom är inklusive. Om alla 500 har samma tid måste vi ändå komma framåt.
-        date_from = newest if newest > date_from else date_from + 1
-    log.info("%s z-rapporter hämtade", count)
+    if count:
+        log.info("%s z-rapporter hämtade", count)
     return rows
 
 

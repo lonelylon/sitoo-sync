@@ -42,10 +42,14 @@ class FakeSitoo:
         self.users = [{"userid": f"{{U{i}}}", "email": f"u{i}@ex.se"} for i in range(1, 46)]
         self.requests: list[tuple[str, dict]] = []
         self.rate_limit_next = 0
+        self.error_next = 0
         self.max_num = 100
 
     def handle(self, path: str, q: dict) -> tuple[int, dict, object]:
         self.requests.append((path, q))
+        if self.error_next > 0:
+            self.error_next -= 1
+            return 500, {}, {"statuscode": 500, "errortext": "Internal error"}
         if self.rate_limit_next > 0:
             self.rate_limit_next -= 1
             return 429, {"X-Rate-Limit-Reset": "0"}, {"statuscode": 429, "errortext": "Too many"}
@@ -92,7 +96,9 @@ class FakeSitoo:
                 items = [o for o in items if o["orderdate"] >= int(q["orderdatefrom"])]
             return env(items)
         if p == "/pos-z-reports":
-            items = [z for z in self.zreports if z["dateadded"] >= int(q.get("dateaddedfrom", 0))]
+            items = [z for z in self.zreports if z["dateadded"] >= int(q.get("dateaddedfrom", 0))
+                     and z["dateadded"] <= int(q.get("dateaddedto", 10**12))]
+            items.sort(key=lambda z: z["dateadded"])
             return 200, {}, items[:500]
         if p == "/sites/1/users.json":
             items = self.users
@@ -170,6 +176,11 @@ class FakeDb:
     def get_state(self, e):
         s = self.state.get(e)
         return (s["value"], s["success"]) if s else (None, None)
+
+    def oldest_order_ts(self):
+        t = self.tables.get("Orders") or {}
+        dates = [o.get("orderdate") for o in t.values() if o.get("orderdate")]
+        return min(dates) if dates else None
 
     def existing_ids(self, kind, ids, site=None):
         t = self.tables.get({"products": "Products", "users": "Users", "warehouses": "Warehouses"}[kind], {})
@@ -312,18 +323,62 @@ class SyncTests(unittest.TestCase):
         J.refresh_recent_orders(self.ctx)
         self.assertEqual(set(self.db.tables["Orders"]), {2})
 
+    def _recent_zreports(self, n, same_time=False):
+        base = int(time.time()) - 40 * 86400
+        self.fake.zreports = [{"registerid": "R1", "zreportid": i,
+                               "dateadded": base if same_time else base + i * 60} for i in range(1, n + 1)]
+
     def test_zreports_paging_over_500_cap(self):
+        self._recent_zreports(1200)
         J.sync_zreports(self.ctx)
         self.assertEqual(len(self.db.tables["ZReports"]), 1200)
-        self.assertEqual(self.db.get_state("zreports")[0], 1_700_001_200)
         calls = [r for r in self.fake.requests if r[0].endswith("/pos-z-reports")]
-        self.assertEqual(len(calls), 3)
+        self.assertTrue(all("dateaddedto" in c[1] for c in calls))
         self.assertEqual(calls[0][1]["eshopid"], "1")
+        self.assertGreaterEqual(self.db.get_state("zreports")[0], int(time.time()) - 5)
+
+    def test_zreports_windows_are_at_most_30_days(self):
+        self._recent_zreports(10)
+        J.sync_zreports(self.ctx)
+        for _, q in [r for r in self.fake.requests if r[0].endswith("/pos-z-reports")]:
+            self.assertLessEqual(int(q["dateaddedto"]) - int(q["dateaddedfrom"]), 30 * 86400)
+
+    def test_zreports_start_from_oldest_order(self):
+        J.sync_orders(self.ctx)          # äldsta order: 1_700_000_060
+        self.fake.requests.clear()
+        J.sync_zreports(self.ctx)
+        first = [r for r in self.fake.requests if r[0].endswith("/pos-z-reports")][0][1]
+        self.assertEqual(int(first["dateaddedfrom"]), 1_700_000_060 - 86400)
+
+    def test_zreports_incremental_is_one_call(self):
+        self._recent_zreports(10)
+        J.sync_zreports(self.ctx)
+        self.fake.requests.clear()
+        J.sync_zreports(self.ctx)
+        calls = [r for r in self.fake.requests if r[0].endswith("/pos-z-reports")]
+        self.assertEqual(len(calls), 1)
 
     def test_zreports_same_timestamp_does_not_loop(self):
-        self.fake.zreports = [{"registerid": "R1", "zreportid": i, "dateadded": 5} for i in range(600)]
+        self._recent_zreports(600, same_time=True)
         J.sync_zreports(self.ctx)  # skulle hänga om bläddringen inte kom framåt
         self.assertEqual(len(self.db.tables["ZReports"]), 500)
+
+    def test_server_error_retried_twice_then_fails(self):
+        self.fake.error_next = 10
+        waits = []
+        self.api.on_wait = waits.append
+        with self.assertRaises(SitooError) as cm:
+            self.api.get("/sites/1/stores.json")
+        self.assertEqual(cm.exception.status, 500)
+        self.assertEqual(self.sleeps, [60, 120])
+        self.assertIn("HTTP 500", waits[0])
+        self.assertIsNone(waits[-1])        # nollställs efter anropet
+
+    def test_server_error_recovers(self):
+        self.fake.error_next = 1
+        data = self.api.get("/sites/1/stores.json")
+        self.assertEqual(data["totalcount"], 2)
+        self.assertEqual(self.sleeps, [60])
 
     def test_users(self):
         J.sync_users(self.ctx)
@@ -363,7 +418,12 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(self.db.state["job:boom"]["error"], "RuntimeError: testfel")
         now = datetime.now(timezone.utc)
         self.assertFalse(is_due(job, self.db, 10, now))
+        self.assertFalse(is_due(job, self.db, 10, now + timedelta(minutes=9)))
         self.assertTrue(is_due(job, self.db, 10, now + timedelta(minutes=11)))
+        hourly = J.Job("boom", 3600, boom)          # timjobb försöker inte oftare än varje timme
+        run_job(hourly, self.ctx)
+        self.assertFalse(is_due(hourly, self.db, 10, now + timedelta(minutes=30)))
+        self.assertTrue(is_due(hourly, self.db, 10, now + timedelta(minutes=61)))
 
     def test_scheduler_due_logic(self):
         job = J.Job("x", 15 * 60, lambda c: 0)
