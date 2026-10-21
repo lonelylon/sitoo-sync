@@ -5,11 +5,14 @@ Hämtningen görs med SQL mot databasen. Beräkningarna görs i rena Python-funk
 """
 from __future__ import annotations
 
+import logging
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
+log = logging.getLogger("sitoosync.reports")
 ZERO = Decimal("0.00")
 TZ = "'W. Europe Standard Time'"
 
@@ -135,17 +138,19 @@ def summarize_time(stamps: list[Stamp]) -> list[PersonSummary]:
 
 def stamps_sql() -> str:
     """Stämplingar i ett datumintervall (svensk tid): Sitoo-ordrar med stämplingsartikeln
-    minus borttagna, plus manuella stämplingar. Parametrar: sku, från, till (exkl.), från, till."""
+    minus borttagna, plus manuella stämplingar. Parametrar: sku, från, till (exkl.), från, till.
+
+    Frågan utgår från orderraderna med stämplingsartikeln (index på Sku) och slår upp
+    ordern via primärnyckeln, så den behöver inte läsa periodens alla ordrar."""
     return f"""
 SELECT 'Sitoo' AS Kalla, o.OrderId AS Ref,
        COALESCE(NULLIF(LTRIM(RTRIM(CONCAT(u.NameFirst, ' ', u.NameLast))), ''), CONCAT('Okänd ', o.UserIdStaff)) AS Namn,
-       COALESCE(o.OrderDateLocal,
-                CAST(o.OrderDateUtc AT TIME ZONE 'UTC' AT TIME ZONE {TZ} AS DATETIME2(0))) AS Tid
-FROM sitoo.Orders o
+       o.OrderDateLocal AS Tid
+FROM (SELECT DISTINCT i.OrderId FROM sitoo.OrderItems i WHERE i.Sku = %s) s
+JOIN sitoo.Orders o ON o.OrderId = s.OrderId
 LEFT JOIN sitoo.Users u ON u.UserId = o.UserIdStaff
-WHERE EXISTS (SELECT 1 FROM sitoo.OrderItems i WHERE i.OrderId = o.OrderId AND i.Sku = %s)
+WHERE o.OrderDateLocal >= %s AND o.OrderDateLocal < %s
   AND NOT EXISTS (SELECT 1 FROM sitoo.TimeStampRemove r WHERE r.OrderId = o.OrderId)
-  AND o.OrderDateLocal >= %s AND o.OrderDateLocal < %s
 UNION ALL
 SELECT 'Manuell', a.Id, a.Namn, a.Stampling
 FROM sitoo.TimeStampAdd a
@@ -371,11 +376,20 @@ class Reports:
     def __init__(self, db):
         self.db = db
 
+    def _q(self, sql: str, params: tuple, label: str) -> list[dict]:
+        """Kör en fråga och loggar den om den tar mer än en sekund (för felsökning av långsamma sidor)."""
+        started = time.perf_counter()
+        rows = self.db.query(sql, params)
+        seconds = time.perf_counter() - started
+        if seconds > 1:
+            log.warning("Långsam rapportfråga '%s': %.1f s, %s rader", label, seconds, len(rows))
+        return rows
+
     # ------------------------------------------------------------ tid
     def stamps(self, start: date, end: date, sku: str) -> list[Stamp]:
         frm = datetime.combine(start, datetime.min.time())
         to = datetime.combine(end + timedelta(days=1), datetime.min.time())
-        rows = self.db.query(stamps_sql(), (sku, frm, to, frm, to))
+        rows = self._q(stamps_sql(), (sku, frm, to, frm, to), "stämplingar")
         return [Stamp(r["Kalla"], r["Ref"], r["Namn"], r["Tid"]) for r in rows]
 
     def manual_stamps(self, start: date, end: date) -> list[dict]:
@@ -385,17 +399,19 @@ class Reports:
                              "WHERE Stampling >= %s AND Stampling < %s ORDER BY Stampling", (frm, to))
 
     def removed_stamps(self) -> list[dict]:
-        return self.db.query("SELECT r.OrderId, r.Kommentar, o.OrderDateLocal, "
+        return self._q("SELECT r.OrderId, r.Kommentar, o.OrderDateLocal, "
                              "LTRIM(RTRIM(CONCAT(u.NameFirst, ' ', u.NameLast))) AS Namn "
                              "FROM sitoo.TimeStampRemove r LEFT JOIN sitoo.Orders o ON o.OrderId = r.OrderId "
-                             "LEFT JOIN sitoo.Users u ON u.UserId = o.UserIdStaff ORDER BY o.OrderDateLocal DESC")
+                             "LEFT JOIN sitoo.Users u ON u.UserId = o.UserIdStaff ORDER BY o.OrderDateLocal DESC",
+                       (), "borttagna stämplingar")
 
     def staff_names(self) -> list[str]:
-        rows = self.db.query("SELECT DISTINCT LTRIM(RTRIM(CONCAT(NameFirst, ' ', NameLast))) AS Namn "
-                             "FROM sitoo.Users WHERE Role IS NOT NULL OR UserId IN "
-                             "(SELECT DISTINCT UserIdStaff FROM sitoo.Orders WHERE UserIdStaff IS NOT NULL) "
-                             "ORDER BY 1")
-        return [r["Namn"] for r in rows if r["Namn"]]
+        """Personal (användare med roll) och namn från manuella stämplingar. Personer som
+        stämplat i perioden läggs till av sidan själv, så ordertabellen behöver inte läsas här."""
+        rows = self._q("SELECT LTRIM(RTRIM(CONCAT(NameFirst, ' ', NameLast))) AS Namn "
+                       "FROM sitoo.Users WHERE Role IS NOT NULL "
+                       "UNION SELECT Namn FROM sitoo.TimeStampAdd", (), "personal")
+        return sorted({r["Namn"] for r in rows if r["Namn"]}, key=str.casefold)
 
     def add_stamp(self, name: str, at: datetime, comment: str | None) -> None:
         self.db.execute("INSERT sitoo.TimeStampAdd (Namn, Stampling, Kommentar) VALUES (%s, %s, %s)",
@@ -414,11 +430,11 @@ class Reports:
 
     # ------------------------------------------------------------ bokföring
     def zrows(self, start: date, end: date) -> list[ZRow]:
-        zs = self.db.query(zreports_sql(), (start, end))
-        vats = self.db.query(zchildren_sql("ZReportVatGroups",
-                                           "c.VatValue, c.MoneyTotal, c.MoneyTotalNet, c.MoneyTotalVat"),
-                             (start, end))
-        pays = self.db.query(zchildren_sql("ZReportPayments", "c.Name, c.MoneyTotal"), (start, end))
+        zs = self._q(zreports_sql(), (start, end), "z-rapporter")
+        vats = self._q(zchildren_sql("ZReportVatGroups",
+                                     "c.VatValue, c.MoneyTotal, c.MoneyTotalNet, c.MoneyTotalVat"),
+                       (start, end), "momsgrupper")
+        pays = self._q(zchildren_sql("ZReportPayments", "c.Name, c.MoneyTotal"), (start, end), "betalningar")
         return assemble_zrows(zs, vats, pays)
 
     def deposits(self, start: date, end: date) -> list[dict]:
