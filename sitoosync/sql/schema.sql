@@ -1334,3 +1334,65 @@ IF EXISTS (SELECT 1 FROM sitoo.Orders)
    AND (NOT EXISTS (SELECT 1 FROM sitoo.DailySales) OR EXISTS (SELECT 1 FROM sitoo.DailySales WHERE ArReadag IS NULL))
     EXEC sitoo.RefreshDailySales;
 GO
+
+------------------------------------------------------------------------------
+-- Tidrapport: manuella stämplingar och borttagna stämplingar
+------------------------------------------------------------------------------
+IF OBJECT_ID(N'sitoo.TimeStampAdd', N'U') IS NULL
+CREATE TABLE sitoo.TimeStampAdd (
+    Id          INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_TimeStampAdd PRIMARY KEY,
+    Namn        NVARCHAR(255) NOT NULL,
+    Stampling   DATETIME2(0)  NOT NULL,   -- svensk tid
+    Kommentar   NVARCHAR(500) NULL,
+    CreatedUtc  DATETIME2(0)  NOT NULL CONSTRAINT DF_TimeStampAdd_Created DEFAULT SYSUTCDATETIME()
+);
+GO
+IF OBJECT_ID(N'sitoo.TimeStampRemove', N'U') IS NULL
+CREATE TABLE sitoo.TimeStampRemove (
+    OrderId     BIGINT        NOT NULL CONSTRAINT PK_TimeStampRemove PRIMARY KEY,
+    Kommentar   NVARCHAR(500) NULL,
+    CreatedUtc  DATETIME2(0)  NOT NULL CONSTRAINT DF_TimeStampRemove_Created DEFAULT SYSUTCDATETIME()
+);
+GO
+
+------------------------------------------------------------------------------
+-- Bokföring: datumrättning av z-rapporter och bankningar av kontanter
+------------------------------------------------------------------------------
+IF OBJECT_ID(N'sitoo.ZReportDateFix', N'U') IS NULL
+CREATE TABLE sitoo.ZReportDateFix (
+    RegisterId  NVARCHAR(100) NOT NULL,
+    ZReportId   INT           NOT NULL,
+    NyttDatum   DATE          NOT NULL,
+    Kommentar   NVARCHAR(500) NULL,
+    CreatedUtc  DATETIME2(0)  NOT NULL CONSTRAINT DF_ZReportDateFix_Created DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT PK_ZReportDateFix PRIMARY KEY (RegisterId, ZReportId)
+);
+GO
+IF OBJECT_ID(N'sitoo.BankDeposit', N'U') IS NULL
+CREATE TABLE sitoo.BankDeposit (
+    Id          INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_BankDeposit PRIMARY KEY,
+    Datum       DATE          NOT NULL,
+    Belopp      DECIMAL(19,2) NOT NULL,
+    Kommentar   NVARCHAR(500) NULL,
+    CreatedUtc  DATETIME2(0)  NOT NULL CONSTRAINT DF_BankDeposit_Created DEFAULT SYSUTCDATETIME()
+);
+GO
+
+-- Z-rapporter med bokföringsdatum: rättat datum om det finns, annars dagen då
+-- kassan öppnades (svensk tid), som i Sitoos utskrivna z-rapport.
+CREATE OR ALTER VIEW sitoo.vZRapporter
+AS
+SELECT
+    z.RegisterId, z.ZReportId, z.RegisterNumber, z.StoreName, z.EshopId,
+    COALESCE(f.NyttDatum,
+             CAST(CAST(COALESCE(z.DateOpenedUtc, z.DateCreatedUtc) AT TIME ZONE 'UTC'
+                       AT TIME ZONE 'W. Europe Standard Time' AS DATETIME2(0)) AS date)) AS Dag,
+    CAST(CAST(COALESCE(z.DateOpenedUtc, z.DateCreatedUtc) AT TIME ZONE 'UTC'
+              AT TIME ZONE 'W. Europe Standard Time' AS DATETIME2(0)) AS date) AS OriginalDag,
+    f.NyttDatum,
+    CAST(CAST(z.DateCreatedUtc AT TIME ZONE 'UTC' AT TIME ZONE 'W. Europe Standard Time' AS DATETIME2(0)) AS DATETIME2(0)) AS Stangd,
+    z.MoneySalesTotal, z.MoneyRefundTotal, z.MoneyRoundOff, z.MoneySummaryTotal,
+    z.NumReceipts, z.Staff
+FROM sitoo.ZReports z
+LEFT JOIN sitoo.ZReportDateFix f ON f.RegisterId = z.RegisterId AND f.ZReportId = z.ZReportId;
+GO

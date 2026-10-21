@@ -66,6 +66,25 @@ FIELDS: list[Field] = [
           help="Uppdaterar lagersaldo för sålda artiklar och hämtar produkter, personal och lager som saknas"),
     Field("page_size", "PAGE_SIZE", "Poster per API-anrop", "int", 100, "other"),
     Field("log_level", "LOG_LEVEL", "Loggnivå", "str", "INFO", "other", help="INFO eller DEBUG"),
+    # Rapporter: tidrapport
+    Field("report_stamp_sku", "REPORT_STAMP_SKU", "Artikelnummer för stämpling", "str", "91000", "time",
+          help="Artikeln som scannas i kassan vid in- och utstämpling"),
+    Field("report_payroll_start", "REPORT_PAYROLL_START", "Löneperioden börjar dag", "int", 21, "time",
+          help="21 ger perioden 21:a till 20:e. 1 ger hela kalendermånader"),
+    # Rapporter: bokföring
+    Field("acc_payments", "ACC_PAYMENTS", "Konton för betalsätt", "str",
+          "Kort=1937; Swish=1936; Kontant=1911", "accounting",
+          help="Betalsättets namn i z-rapporten = konto, separerade med semikolon. Kontanter delas på bank och kassa"),
+    Field("acc_net_25", "ACC_NET_25", "Försäljning 25 %", "str", "3011", "accounting"),
+    Field("acc_vat_25", "ACC_VAT_25", "Utgående moms 25 %", "str", "2610", "accounting"),
+    Field("acc_net_12", "ACC_NET_12", "Försäljning 12 %", "str", "3010", "accounting"),
+    Field("acc_vat_12", "ACC_VAT_12", "Utgående moms 12 %", "str", "2621", "accounting"),
+    Field("acc_net_6", "ACC_NET_6", "Försäljning 6 %", "str", "3009", "accounting"),
+    Field("acc_vat_6", "ACC_VAT_6", "Utgående moms 6 %", "str", "2622", "accounting"),
+    Field("acc_net_0", "ACC_NET_0", "Försäljning momsfri", "str", "3015", "accounting"),
+    Field("acc_rounding", "ACC_ROUNDING", "Öresavrundning", "str", "3740", "accounting"),
+    Field("acc_bank", "ACC_BANK", "Bankningar (kontant till bank)", "str", "1938", "accounting"),
+    Field("acc_cash", "ACC_CASH", "Kassa (kontanter kvar)", "str", "1911", "accounting"),
 ]
 FIELD_BY_KEY = {f.key: f for f in FIELDS}
 

@@ -90,6 +90,14 @@ Filen [`grafana/sitoo-forsaljning-live.json`](grafana/sitoo-forsaljning-live.jso
 
 `sitoo.Orders.OrderDateLocal` är orderdatumet i svensk tid. Tabellen `sitoo.DailySales` (och vyn `sitoo.vDagsforsaljning`) har försäljningen per dag i svensk tid och uppdateras automatiskt när ordrar sparas. Den markerar också **readagar** (`ArReadag = 1`): dagar då minst 90 % av de sålda artiklarna har sålts med minst 30 % rabatt (`AndelRea`). Gränserna är standardvärden i proceduren `sitoo.RefreshDailySales`.
 
+## Tidrapport och bokföring
+
+Två sidor i webbgränssnittet ersätter de tidigare Excel-filerna.
+
+**Tidrapport** räknar arbetstid från stämplingar, alltså ordrar med stämplingsartikeln (91000 som standard) som scannas i kassan. *In* är dagens första stämpling, *Ut* den sista och *Timmar* skillnaden. Rapporten filtreras på löneperiod (21:a–20:e som standard) och person. Dagar med en eller ett udda antal stämplingar markeras. Glömda stämplingar läggs till och felaktiga tas bort direkt på sidan (tabellerna `sitoo.TimeStampAdd` och `sitoo.TimeStampRemove`). Rapporten kan exporteras till CSV och skrivas ut.
+
+**Bokföring** bygger ett konteringsförslag per månad, eller för en valfri period, från z-rapporterna. Debet är betalsätten, där kontanter delas på bankningar och kassa. Kredit är försäljning och moms per momssats samt öresavrundning. Momsen räknas som netto × momssats, och skillnaden mot z-rapportens moms läggs på öresavrundningskontot. Under verifikationen visas varje z-rapport. Ett z-rapportdatum kan rättas (`sitoo.ZReportDateFix`), och bankningar av kontanter registreras på sidan (`sitoo.BankDeposit`). Kontona ställs in under **Inställningar > Bokföring**.
+
 ## Webbgränssnittet
 
 - **Översikt:** status per jobb, senaste och nästa körning, fel i klartext, antal rader per tabell, **Kör nu**, **Pausa/Starta** och **Hämta om allt** per datatyp.

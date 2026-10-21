@@ -20,6 +20,7 @@ from .config import FIELDS, ConfigError
 from .db import Database
 from .settings import SettingsStore
 from .sitoo import SitooClient, SitooError
+from .web_reports import ReportPagesMixin
 from .worker import JOB_LABELS, RESET_PATTERNS, LogBuffer, SyncWorker, next_run, utcnow
 
 try:
@@ -50,6 +51,8 @@ SECTIONS = [
     ("db", "SQL Server", "Databasen där datan sparas. Tabeller skapas automatiskt i schemat sitoo."),
     ("schedule", "Schema", "Minuter mellan körningar. 0 stänger av jobbet."),
     ("other", "Övrigt", ""),
+    ("time", "Tidrapport", "Stämplingar görs genom att artikeln nedan scannas i kassan."),
+    ("accounting", "Bokföring", "Konton i verifikationen på sidan Bokföring."),
 ]
 
 
@@ -241,7 +244,7 @@ class WebApp:
         return server
 
 
-class RequestHandler(BaseHTTPRequestHandler):
+class RequestHandler(ReportPagesMixin, BaseHTTPRequestHandler):
     app: WebApp
     server_version = "sitoo-sync"
     sys_version = ""
@@ -297,7 +300,8 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def _page(self, title: str, body: str, active: str = "", nav: bool = True, refresh: int | None = None,
               status: int = 200) -> None:
-        links = [("/", "Översikt", "home"), ("/installningar", "Inställningar", "settings"), ("/logg", "Logg", "log")]
+        links = [("/", "Översikt", "home"), ("/tid", "Tidrapport", "time"), ("/bokforing", "Bokföring", "accounting"),
+                 ("/installningar", "Inställningar", "settings"), ("/logg", "Logg", "log")]
         nav_html = ""
         if nav:
             items = "".join(f'<a href="{href}" class="{"on" if key == active else ""}">{label}</a>'
@@ -335,7 +339,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             return self.page_login()
         if not self.app.get_session(self._token()):
             return self._redirect("/loggain")
-        routes = {"/": self.page_overview, "/installningar": self.page_settings, "/logg": self.page_log}
+        routes = {"/": self.page_overview, "/installningar": self.page_settings, "/logg": self.page_log,
+                  "/tid": self.page_time, "/tid.csv": self.csv_time,
+                  "/bokforing": self.page_accounting, "/bokforing.csv": self.csv_accounting}
         handler = routes.get(path)
         if handler is None:
             return self._page("Hittades inte", "<h1>Sidan finns inte</h1>", status=404)
@@ -381,6 +387,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.app.worker.request_run(name)
                 log.info("Körning av %s begärd från webbgränssnittet", name)
             return self._redirect("/")
+        if path.startswith("/tid/"):
+            return self.post_time(path, form)
+        if path.startswith("/bokforing/"):
+            return self.post_accounting(path, form)
         if path.startswith("/hamta-om/"):
             return self.post_reset(path[len("/hamta-om/"):])
         if path == "/api/test/sitoo":
@@ -618,7 +628,7 @@ Befintliga rader skrivs över, inget tas bort. Ordrar hämtas från datumet i in
                         'onclick="runTest(this,\'/api/test/db\')">Testa anslutning till databasen</button></div>'
                         '<div id="t_db" class="result"></div>')
             lead_html = f'<p class="lead small">{esc(lead)}</p>' if lead else ""
-            sections.append(f'<div class="card"><h2>{esc(title)}</h2>{lead_html}<div class="grid">{"".join(fields_html)}</div>{test}</div>')
+            sections.append(f'<div class="card" id="{key}"><h2>{esc(title)}</h2>{lead_html}<div class="grid">{"".join(fields_html)}</div>{test}</div>')
 
         body = f"""<h1>Inställningar</h1>{''.join(parts)}
 <form method="post" action="/installningar">{csrf}

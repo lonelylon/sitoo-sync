@@ -222,7 +222,7 @@ class Client:
         return html[i:html.index('"', i)]
 
 
-class WebTests(unittest.TestCase):
+class WebBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = SettingsStore(self.tmp.name)
@@ -261,6 +261,7 @@ class WebTests(unittest.TestCase):
         status, loc, _ = self.c.req("POST", "/loggain", {"password": "hemligt123"})
         self.assertEqual((status, loc), (303, "/"))
 
+class WebTests(WebBase):
     def test_health_without_login(self):
         self.assertEqual(self.c.req("GET", "/health")[0], 200)
 
@@ -396,3 +397,161 @@ class WebTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ------------------------------------------------------------------ rapportsidor
+from decimal import Decimal as _Dec  # noqa: E402
+from datetime import date as _date  # noqa: E402
+
+import sitoosync.web_reports as WR  # noqa: E402
+from sitoosync.reports import Stamp as _Stamp, assemble_zrows as _assemble  # noqa: E402
+
+
+class FakeReports:
+    calls: list = []
+    stamps_data: list = []
+    zdata: tuple = ([], [], [])
+    deposits_data: list = []
+
+    def __init__(self, db):
+        self.db = db
+
+    def stamps(self, start, end, sku):
+        FakeReports.calls.append(("stamps", start, end, sku))
+        return list(FakeReports.stamps_data)
+
+    def staff_names(self):
+        return ["Anna Andersson", "Bo Berg"]
+
+    def removed_stamps(self):
+        return [{"OrderId": 77, "Kommentar": "Dubbel", "OrderDateLocal": datetime(2026, 9, 1, 10, 0), "Namn": "Bo Berg"}]
+
+    def add_stamp(self, name, at, comment):
+        FakeReports.calls.append(("add", name, at, comment))
+
+    def delete_manual_stamp(self, i):
+        FakeReports.calls.append(("delete_manual", i))
+
+    def remove_order_stamp(self, o, c):
+        FakeReports.calls.append(("remove", o))
+
+    def restore_order_stamp(self, o):
+        FakeReports.calls.append(("restore", o))
+
+    def zrows(self, start, end):
+        FakeReports.calls.append(("zrows", start, end))
+        return _assemble(*FakeReports.zdata)
+
+    def deposits(self, start, end):
+        return list(FakeReports.deposits_data)
+
+    def add_deposit(self, d, a, c):
+        FakeReports.calls.append(("deposit", d, a, c))
+
+    def delete_deposit(self, i):
+        FakeReports.calls.append(("delete_deposit", i))
+
+    def set_zreport_date(self, rid, zid, d, c):
+        FakeReports.calls.append(("zdate", rid, zid, d))
+
+
+class ReportPageTests(WebBase):
+    def setUp(self):
+        super().setUp()
+        self._orig = WR.Reports
+        WR.Reports = FakeReports
+        FakeReports.calls = []
+        FakeReports.stamps_data = [
+            _Stamp("Sitoo", 1001, "Anna Andersson", datetime(2026, 8, 21, 9, 59)),
+            _Stamp("Sitoo", 1002, "Anna Andersson", datetime(2026, 8, 21, 18, 0)),
+            _Stamp("Manuell", 5, "Anna Andersson", datetime(2026, 8, 22, 10, 0)),
+        ]
+        FakeReports.zdata = (
+            [{"RegisterId": "R1", "ZReportId": 1845, "RegisterNumber": 1, "Dag": _date(2026, 9, 1),
+              "OriginalDag": _date(2026, 9, 1), "NyttDatum": None, "Stangd": None, "MoneySalesTotal": "19997.50",
+              "MoneyRefundTotal": "0", "MoneyRoundOff": "0", "MoneySummaryTotal": "19997.50", "NumReceipts": 50,
+              "CashToBank": "-1000.00"}],
+            [{"RegisterId": "R1", "ZReportId": 1845, "Kind": "sales", "VatValue": 25, "MoneyTotal": "19264.50",
+              "MoneyTotalNet": "15411.60", "MoneyTotalVat": "3852.90"},
+             {"RegisterId": "R1", "ZReportId": 1845, "Kind": "sales", "VatValue": 6, "MoneyTotal": "733.00",
+              "MoneyTotalNet": "691.50", "MoneyTotalVat": "41.50"}],
+            [{"RegisterId": "R1", "ZReportId": 1845, "Kind": "sales", "Name": "Kort", "MoneyTotal": "19962.50"},
+             {"RegisterId": "R1", "ZReportId": 1845, "Kind": "sales", "Name": "Swish", "MoneyTotal": "35.00"}])
+        FakeReports.deposits_data = []
+        self.login()
+        self.store.update(COMPLETE)
+
+    def tearDown(self):
+        WR.Reports = self._orig
+        super().tearDown()
+
+    def test_time_page(self):
+        status, _, html = self.c.req("GET", "/tid?period=2026-09")
+        self.assertEqual(status, 200)
+        self.assertIn("Anna Andersson", html)
+        self.assertIn("2026-08-21 – 2026-09-20", html)
+        self.assertIn("8,02", html)                 # 09:59–18:00
+        self.assertIn("Bara en stämpling", html)
+        self.assertIn("Sitoo order 1001", html)
+        self.assertIn("Order 77", html)              # borttagen
+        self.assertEqual(FakeReports.calls[0], ("stamps", _date(2026, 8, 21), _date(2026, 9, 20), "91000"))
+
+    def test_time_person_filter_and_csv(self):
+        _, _, html = self.c.req("GET", "/tid?period=2026-09&person=Bo+Berg")
+        self.assertIn("Inga stämplingar i perioden", html)
+        status, _, body = self.c.req("GET", "/tid.csv?period=2026-09")
+        self.assertEqual(status, 200)
+        self.assertTrue(body.startswith("﻿Namn;Datum"))
+        self.assertIn("Anna Andersson;2026-08-21;fre;09:59;18:00;2;8,02;", body)
+
+    def test_time_actions(self):
+        csrf = self.c.csrf("/tid?period=2026-09")
+        back = "/tid?period=2026-09"
+        _, loc, _ = self.c.req("POST", "/tid/lagg-till", {"csrf": csrf, "back": back, "namn": "Bo Berg",
+                                                          "datum": "2026-09-01", "tid": "17:30", "kommentar": "Glömt"})
+        self.assertEqual(loc, back)
+        self.assertIn(("add", "Bo Berg", datetime(2026, 9, 1, 17, 30), "Glömt"), FakeReports.calls)
+        self.c.req("POST", "/tid/ta-bort", {"csrf": csrf, "back": back, "order_id": "1001"})
+        self.c.req("POST", "/tid/aterstall", {"csrf": csrf, "back": back, "order_id": "77"})
+        self.c.req("POST", "/tid/radera-manuell", {"csrf": csrf, "back": back, "id": "5"})
+        self.assertIn(("remove", 1001), FakeReports.calls)
+        self.assertIn(("restore", 77), FakeReports.calls)
+        self.assertIn(("delete_manual", 5), FakeReports.calls)
+        # Elak back-adress ignoreras
+        _, loc, _ = self.c.req("POST", "/tid/ta-bort", {"csrf": csrf, "back": "//evil.example", "order_id": "1"})
+        self.assertEqual(loc, "/tid")
+
+    def test_accounting_page(self):
+        status, _, html = self.c.req("GET", "/bokforing?manad=2026-09")
+        self.assertEqual(status, 200)
+        self.assertIn("Balanserar", html)
+        self.assertIn("19 962,50", html)            # kort på 1937
+        self.assertIn("15 411,60", html)            # 25 % netto
+        self.assertIn("Kassa 1", html)
+        self.assertIn("−1 000,00", html)            # uttag till bank
+        self.assertEqual(FakeReports.calls[0], ("zrows", _date(2026, 9, 1), _date(2026, 9, 30)))
+
+    def test_accounting_custom_period_and_csv(self):
+        self.c.req("GET", "/bokforing?fran=2026-09-01&till=2026-09-15")
+        self.assertEqual(FakeReports.calls[-1], ("zrows", _date(2026, 9, 1), _date(2026, 9, 15)))
+        _, _, body = self.c.req("GET", "/bokforing.csv?manad=2026-09")
+        self.assertIn("1937;Försäljning – Kort;19962,50;0,00", body)
+        self.assertIn("Kassa 1;1845;2026-09-01;19997,50", body)
+
+    def test_accounting_actions(self):
+        csrf = self.c.csrf("/bokforing?manad=2026-09")
+        back = "/bokforing?manad=2026-09"
+        self.c.req("POST", "/bokforing/bankning", {"csrf": csrf, "back": back, "datum": "2026-09-30",
+                                                   "belopp": "12 500,50", "kommentar": ""})
+        self.assertIn(("deposit", _date(2026, 9, 30), _Dec("12500.50"), ""), FakeReports.calls)
+        self.c.req("POST", "/bokforing/datum", {"csrf": csrf, "back": back, "register_id": "R1",
+                                                "zreport_id": "1845", "datum": "2026-08-31"})
+        self.assertIn(("zdate", "R1", 1845, _date(2026, 8, 31)), FakeReports.calls)
+        self.c.req("POST", "/bokforing/datum", {"csrf": csrf, "back": back, "register_id": "R1",
+                                                "zreport_id": "1845", "datum": "2026-08-31", "atgard": "aterstall"})
+        self.assertIn(("zdate", "R1", 1845, None), FakeReports.calls)
+
+    def test_accounting_unbalanced_warns(self):
+        FakeReports.zdata[2].pop()      # Swish saknas -> 35 kr diff
+        _, _, html = self.c.req("GET", "/bokforing?manad=2026-09")
+        self.assertIn("balanserar inte", html)

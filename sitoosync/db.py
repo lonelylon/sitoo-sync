@@ -221,6 +221,16 @@ class Database:
         cur.execute(sql, args)
         return {cast(r[0]) for r in cur.fetchall()}
 
+    def query(self, sql: str, params: tuple = ()) -> list[dict]:
+        """Kör en SELECT och returnerar raderna som dictar."""
+        cur = self.conn.cursor(as_dict=True)
+        cur.execute(sql, params)
+        return list(cur.fetchall())
+
+    def execute(self, sql: str, params: tuple = ()) -> None:
+        cur = self.conn.cursor()
+        cur.execute(sql, params)
+
     def oldest_order_ts(self) -> int | None:
         cur = self.conn.cursor()
         cur.execute("SELECT DATEDIFF_BIG(SECOND, '19700101', MIN(OrderDateUtc)) FROM sitoo.Orders")
