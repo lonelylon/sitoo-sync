@@ -90,6 +90,16 @@ details>summary{cursor:pointer;color:var(--accent)}
 details[open]>summary{margin-bottom:8px}
 .inline-form{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .person h2{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+table.persons tr.prow{cursor:pointer}
+table.persons tr.prow:hover td{background:var(--bg)}
+table.persons tr.prow.open td{background:var(--bg);border-bottom-color:transparent}
+.toggle{border:0;background:none;padding:0;font:inherit;color:var(--accent);font-weight:600;cursor:pointer;
+display:inline-flex;align-items:center;gap:8px}
+.toggle .chev{display:inline-block;transition:transform .15s;color:var(--muted);width:1em}
+tr.open .toggle .chev{transform:rotate(90deg)}
+tr.pdetail>td{padding:0 0 14px 26px;background:var(--bg)}
+.detail-wrap{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+table.inner th{background:none}
 .person h2 .muted{font-weight:400;font-size:14px;margin-left:10px}
 @media print{header,.no-print,.filters,form,details>summary{display:none!important}
 .card{border:0;padding:0;margin-bottom:14px;break-inside:avoid}body{background:#fff;color:#000}
@@ -173,56 +183,82 @@ class ReportPagesMixin:
             f'<option value="{esc(n)}" {"selected" if n == person else ""}>{esc(n)}</option>' for n in all_names)
         qs = urlencode({"period": period, "person": person})
 
-        # ---- sammanställning
-        def warn_pill(n: int) -> str:
-            return f'<span class="pill warn">{n} att kontrollera</span>' if n else ""
-        sum_rows = "".join(
-            f'<tr><td><a href="#p-{i}">{esc(p.name)}</a></td><td class="num">{len(p.days)}</td>'
-            f'<td class="num">{p.stamp_count}</td><td class="num">{hours_fmt(p.hours)}</td>'
-            f'<td>{warn_pill(p.warnings)}</td></tr>'
-            for i, p in enumerate(people))
-        total_h = sum(p.hours for p in people)
-        summary = ("<p class='muted'>Inga stämplingar i perioden.</p>" if not people else
-                   '<div class="scroll"><table class="compact"><thead><tr><th>Person</th><th class="num">Dagar (AD)</th>'
-                   '<th class="num">Stämplingar (AS)</th><th class="num">Timmar</th><th></th></tr></thead>'
-                   f'<tbody>{sum_rows}<tr class="total"><td>Totalt</td><td class="num">{sum(len(p.days) for p in people)}</td>'
-                   f'<td class="num">{sum(p.stamp_count for p in people)}</td><td class="num">{hours_fmt(total_h)}</td>'
-                   '<td></td></tr></tbody></table></div>')
-
-        # ---- per person
-        person_cards = []
-        for i, p in enumerate(people):
+        # ---- detaljer per person (visas när man klickar på personen)
+        details_html = []
+        for p in people:
             rows = []
             for d in p.days:
                 stamp_items = []
-                for s in d.stamps:
-                    if s.source == "Sitoo":
+                for st in d.stamps:
+                    if st.source == "Sitoo":
                         action = (f'<form class="inline" method="post" action="/tid/ta-bort">{csrf}'
-                                  f'<input type="hidden" name="order_id" value="{s.ref}">'
+                                  f'<input type="hidden" name="order_id" value="{st.ref}">'
                                   f'<input type="hidden" name="back" value="{esc(back)}">'
-                                  f'<button class="sm danger" onclick="return confirm(\'Ta bort stämplingen {s.at:%H:%M}?\')">'
+                                  f'<button class="sm danger" onclick="return confirm(\'Ta bort stämplingen {st.at:%H:%M}?\')">'
                                   'Ta bort</button></form>')
-                        src = f"Sitoo order {s.ref}"
+                        src = f"Sitoo order {st.ref}"
                     else:
                         action = (f'<form class="inline" method="post" action="/tid/radera-manuell">{csrf}'
-                                  f'<input type="hidden" name="id" value="{s.ref}">'
+                                  f'<input type="hidden" name="id" value="{st.ref}">'
                                   f'<input type="hidden" name="back" value="{esc(back)}">'
                                   f'<button class="sm danger" onclick="return confirm(\'Radera den manuella stämplingen?\')">'
                                   'Radera</button></form>')
                         src = "Manuell"
-                    stamp_items.append(f'<tr><td>{s.at:%H:%M}</td><td class="muted small">{esc(src)}</td><td>{action}</td></tr>')
-                details = (f'<details class="no-print"><summary>{d.count} st</summary>'
-                           f'<table class="compact"><tbody>{"".join(stamp_items)}</tbody></table></details>')
+                    stamp_items.append(f'<tr><td>{st.at:%H:%M}</td><td class="muted small">{esc(src)}</td><td>{action}</td></tr>')
+                stamps_list = (f'<details class="no-print"><summary>{d.count} st</summary>'
+                               f'<table class="compact"><tbody>{"".join(stamp_items)}</tbody></table></details>')
                 warn = f'<span class="pill warn">{esc(d.warning)}</span>' if d.warning else ""
                 rows.append(f'<tr class="{"warn" if d.warning else ""}"><td>{day_fmt(d.day)}</td>'
                             f'<td>{d.time_in:%H:%M}</td><td>{d.time_out:%H:%M}</td>'
-                            f'<td class="num">{hours_fmt(d.hours)}</td><td>{details}</td><td>{warn}</td></tr>')
-            person_cards.append(
-                f'<div class="card person" id="p-{i}"><h2>{esc(p.name)} <span class="muted">{len(p.days)} dagar · '
-                f'{hours_fmt(p.hours)} timmar</span></h2><div class="scroll"><table class="compact"><thead><tr>'
-                '<th>Datum</th><th>In</th><th>Ut</th><th class="num">Timmar</th><th>Stämplingar</th><th></th>'
-                f'</tr></thead><tbody>{"".join(rows)}<tr class="total"><td>Totalt</td><td></td><td></td>'
-                f'<td class="num">{hours_fmt(p.hours)}</td><td>{p.stamp_count} st</td><td></td></tr></tbody></table></div></div>')
+                            f'<td class="num">{hours_fmt(d.hours)}</td><td>{stamps_list}</td><td>{warn}</td></tr>')
+            details_html.append(
+                '<table class="compact inner"><thead><tr><th>Datum</th><th>In</th><th>Ut</th>'
+                '<th class="num">Timmar</th><th>Stämplingar</th><th></th></tr></thead>'
+                f'<tbody>{"".join(rows)}</tbody></table>')
+
+        # ---- sammanställning med utfällbara personer
+        def warn_pill(n: int) -> str:
+            return f'<span class="pill warn">{n} att kontrollera</span>' if n else ""
+        sum_rows = "".join(
+            f'<tr class="prow" data-i="{i}" data-name="{esc(p.name)}">'
+            f'<td><button type="button" class="toggle" id="b-{i}" aria-expanded="false" aria-controls="d-{i}">'
+            f'<span class="chev">▸</span>{esc(p.name)}</button></td><td class="num">{len(p.days)}</td>'
+            f'<td class="num">{p.stamp_count}</td><td class="num">{hours_fmt(p.hours)}</td>'
+            f'<td>{warn_pill(p.warnings)}</td></tr>'
+            f'<tr class="pdetail" id="d-{i}" hidden><td colspan="5"><div class="detail-wrap">{details_html[i]}</div></td></tr>'
+            for i, p in enumerate(people))
+        total_h = sum(p.hours for p in people)
+        expand_buttons = ('' if len(people) < 2 else
+                          '<div class="row no-print" style="margin-bottom:10px">'
+                          '<button type="button" class="sm" onclick="tidAll(true)">Visa alla</button>'
+                          '<button type="button" class="sm" onclick="tidAll(false)">Dölj alla</button>'
+                          '<span class="muted small">Klicka på en person för att se dagarna.</span></div>')
+        summary = ("<p class='muted'>Inga stämplingar i perioden.</p>" if not people else
+                   expand_buttons +
+                   '<div class="scroll"><table class="compact persons"><thead><tr><th>Person</th><th class="num">Dagar (AD)</th>'
+                   '<th class="num">Stämplingar (AS)</th><th class="num">Timmar</th><th></th></tr></thead>'
+                   f'<tbody>{sum_rows}<tr class="total"><td>Totalt</td><td class="num">{sum(len(p.days) for p in people)}</td>'
+                   f'<td class="num">{sum(p.stamp_count for p in people)}</td><td class="num">{hours_fmt(total_h)}</td>'
+                   '<td></td></tr></tbody></table></div>')
+        open_all = "true" if person or len(people) == 1 else "false"
+        toggle_js = f"""<script>
+(function(){{
+  var key='tid-open-{esc(period)}';
+  function load(){{try{{return JSON.parse(sessionStorage.getItem(key)||'[]')}}catch(e){{return []}}}}
+  function save(){{try{{var o=[];document.querySelectorAll('tr.prow').forEach(function(r){{
+    if(!document.getElementById('d-'+r.dataset.i).hidden)o.push(r.dataset.name)}});
+    sessionStorage.setItem(key,JSON.stringify(o))}}catch(e){{}}}}
+  function set(i,open){{var d=document.getElementById('d-'+i),b=document.getElementById('b-'+i);
+    if(!d)return;d.hidden=!open;b.setAttribute('aria-expanded',open?'true':'false');
+    b.closest('tr').classList.toggle('open',open)}}
+  window.tidAll=function(open){{document.querySelectorAll('tr.prow').forEach(function(r){{set(r.dataset.i,open)}});save()}};
+  document.querySelectorAll('tr.prow').forEach(function(r){{
+    r.addEventListener('click',function(e){{if(e.target.closest('a'))return;
+      set(r.dataset.i,document.getElementById('d-'+r.dataset.i).hidden);save()}});}});
+  var saved=load(), all={open_all};
+  document.querySelectorAll('tr.prow').forEach(function(r){{set(r.dataset.i,all||saved.indexOf(r.dataset.name)>=0)}});
+}})();
+</script>"""
 
         name_list = "".join(f'<option value="{esc(n)}">' for n in all_names)
         add_form = f"""<div class="card no-print"><h2>Lägg till stämpling</h2>
@@ -285,11 +321,11 @@ class ReportPagesMixin:
 <div class="card"><h2>Löneperiod {esc(period)} <span class="muted small">{start:%Y-%m-%d} – {end:%Y-%m-%d}</span></h2>
 <p class="lead small">In är dagens första stämpling och Ut den sista. Timmar = Ut − In. Dagar med bara en stämpling ger 0 timmar och markeras.</p>
 {summary}</div>
-{''.join(person_cards)}
 {add_form}
 {manual_card}
 {removed_card}
-<style>{REPORT_CSS}</style>"""
+<style>{REPORT_CSS}</style>
+{toggle_js}"""
         self._page("Tidrapport", body, active="time")
 
     def csv_time(self) -> None:
