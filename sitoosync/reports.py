@@ -433,7 +433,26 @@ class Reports:
                         (order_id, order_id, comment or None))
 
     def restore_order_stamp(self, order_id: int) -> None:
-        self.db.execute("DELETE FROM sitoo.TimeStampRemove WHERE OrderId = %s", (order_id,))
+        """Återställer en borttagen Sitoo-stämpling. Var den flyttad till en annan person
+        tas den flyttade kopian bort, så stämplingen inte räknas två gånger."""
+        self.db.execute("DELETE FROM sitoo.TimeStampAdd WHERE FranOrderId = %s; "
+                        "DELETE FROM sitoo.TimeStampRemove WHERE OrderId = %s", (order_id, order_id))
+
+    def move_order_stamp(self, order_id: int, from_name: str, to_name: str) -> None:
+        """Flyttar en Sitoo-stämpling: ordern tas bort ur tidrapporten och en manuell
+        stämpling med samma tid skapas på den nya personen, i en och samma transaktion."""
+        self.db.execute(
+            "SET XACT_ABORT ON; BEGIN TRAN; "
+            "IF NOT EXISTS (SELECT 1 FROM sitoo.TimeStampRemove WHERE OrderId = %s) "
+            "INSERT sitoo.TimeStampRemove (OrderId, Kommentar) VALUES (%s, %s); "
+            "INSERT sitoo.TimeStampAdd (Namn, Stampling, Kommentar, FranOrderId) "
+            "SELECT %s, OrderDateLocal, %s, OrderId FROM sitoo.Orders WHERE OrderId = %s; "
+            "COMMIT",
+            (order_id, order_id, f"Flyttad till {to_name}"[:500],
+             to_name, f"Flyttad från {from_name} (order {order_id})"[:500], order_id))
+
+    def move_manual_stamp(self, stamp_id: int, to_name: str) -> None:
+        self.db.execute("UPDATE sitoo.TimeStampAdd SET Namn = %s WHERE Id = %s", (to_name, stamp_id))
 
     # ------------------------------------------------------------ bokföring
     def zrows(self, start: date, end: date) -> list[ZRow]:

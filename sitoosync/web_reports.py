@@ -79,6 +79,7 @@ REPORT_CSS = """
 .filters>div{min-width:150px}
 select,input[type=date],input[type=time]{font:inherit;padding:7px 10px;border-radius:8px;border:1px solid var(--line);
 background:var(--bg);color:var(--text)}
+select.sm{padding:4px 8px;font-size:13px;max-width:180px}
 table.compact th,table.compact td{padding:6px 8px;white-space:nowrap}
 table.compact td.small{white-space:normal}
 tr.total td{font-weight:650;border-top:2px solid var(--line)}
@@ -204,7 +205,18 @@ class ReportPagesMixin:
                                   f'<button class="sm danger" onclick="return confirm(\'Radera den manuella stämplingen?\')">'
                                   'Radera</button></form>')
                         src = "Manuell"
-                    stamp_items.append(f'<tr><td>{st.at:%H:%M}</td><td class="muted small">{esc(src)}</td><td>{action}</td></tr>')
+                    move_opts = "".join(f'<option value="{esc(n)}">{esc(n)}</option>'
+                                        for n in all_names if n != p.name)
+                    move = (f'<form class="inline" method="post" action="/tid/flytta">{csrf}'
+                            f'<input type="hidden" name="kalla" value="{esc(st.source)}">'
+                            f'<input type="hidden" name="ref" value="{st.ref}">'
+                            f'<input type="hidden" name="fran" value="{esc(p.name)}">'
+                            f'<input type="hidden" name="back" value="{esc(back)}">'
+                            f'<select class="sm" name="till" aria-label="Flytta stämplingen {st.at:%H:%M} till person" '
+                            f'data-tid="{st.at:%Y-%m-%d %H:%M}" onchange="tidMove(this)">'
+                            f'<option value="">Flytta till…</option>{move_opts}</select></form>') if move_opts else ""
+                    stamp_items.append(f'<tr><td>{st.at:%H:%M}</td><td class="muted small">{esc(src)}</td>'
+                                       f'<td>{move}</td><td>{action}</td></tr>')
                 stamps_list = (f'<details class="no-print"><summary>{d.count} st</summary>'
                                f'<table class="compact"><tbody>{"".join(stamp_items)}</tbody></table></details>')
                 warn = f'<span class="pill warn">{esc(d.warning)}</span>' if d.warning else ""
@@ -251,6 +263,9 @@ class ReportPagesMixin:
   function set(i,open){{var d=document.getElementById('d-'+i),b=document.getElementById('b-'+i);
     if(!d)return;d.hidden=!open;b.setAttribute('aria-expanded',open?'true':'false');
     b.closest('tr').classList.toggle('open',open)}}
+  window.tidMove=function(sel){{if(!sel.value)return;
+    if(confirm('Flytta stämplingen '+sel.dataset.tid+' från '+sel.form.fran.value+' till '+sel.value+'?'))sel.form.submit();
+    else sel.value=''}};
   window.tidAll=function(open){{document.querySelectorAll('tr.prow').forEach(function(r){{set(r.dataset.i,open)}});save()}};
   document.querySelectorAll('tr.prow').forEach(function(r){{
     r.addEventListener('click',function(e){{if(e.target.closest('a'))return;
@@ -384,6 +399,16 @@ class ReportPagesMixin:
             elif path == "/tid/ta-bort":
                 reports.remove_order_stamp(int(form["order_id"]), form.get("kommentar"))
                 log.info("Stämpling (order %s) borttagen ur tidrapporten", form["order_id"])
+            elif path == "/tid/flytta":
+                to_name = (form.get("till") or "").strip()[:255]
+                from_name = (form.get("fran") or "").strip()
+                if to_name and to_name != from_name:
+                    if form.get("kalla") == "Sitoo":
+                        reports.move_order_stamp(int(form["ref"]), from_name, to_name)
+                    else:
+                        reports.move_manual_stamp(int(form["ref"]), to_name)
+                    log.info("Stämpling (%s %s) flyttad från %s till %s",
+                             form.get("kalla"), form.get("ref"), from_name, to_name)
             elif path == "/tid/aterstall":
                 reports.restore_order_stamp(int(form["order_id"]))
         finally:

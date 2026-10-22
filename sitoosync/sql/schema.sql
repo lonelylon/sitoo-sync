@@ -1354,6 +1354,11 @@ CREATE TABLE sitoo.TimeStampRemove (
     CreatedUtc  DATETIME2(0)  NOT NULL CONSTRAINT DF_TimeStampRemove_Created DEFAULT SYSUTCDATETIME()
 );
 GO
+-- Stämplingar som flyttats från en Sitoo-order till en annan person pekar på ordern,
+-- så att de tas bort igen om orderns stämpling återställs.
+IF COL_LENGTH(N'sitoo.TimeStampAdd', N'FranOrderId') IS NULL
+    ALTER TABLE sitoo.TimeStampAdd ADD FranOrderId BIGINT NULL;
+GO
 
 ------------------------------------------------------------------------------
 -- Bokföring: datumrättning av z-rapporter och bankningar av kontanter

@@ -449,6 +449,12 @@ class FakeReports:
     def restore_order_stamp(self, o):
         FakeReports.calls.append(("restore", o))
 
+    def move_order_stamp(self, o, f, t):
+        FakeReports.calls.append(("move_order", o, f, t))
+
+    def move_manual_stamp(self, i, t):
+        FakeReports.calls.append(("move_manual", i, t))
+
     def zrows(self, start, end):
         FakeReports.calls.append(("zrows", start, end))
         return _assemble(*FakeReports.zdata)
@@ -505,6 +511,8 @@ class ReportPageTests(ReportBase):
         self.assertIn("8,02", html)                 # 09:59–18:00
         self.assertIn("Bara en stämpling", html)
         self.assertIn("Sitoo order 1001", html)
+        self.assertIn('action="/tid/flytta"', html)
+        self.assertIn("Flytta till…", html)
         self.assertIn("Order 77", html)              # borttagen
         self.assertEqual(FakeReports.calls[0], ("stamps", _date(2026, 8, 21), _date(2026, 9, 20), "91000"))
 
@@ -529,6 +537,16 @@ class ReportPageTests(ReportBase):
         self.assertIn(("remove", 1001), FakeReports.calls)
         self.assertIn(("restore", 77), FakeReports.calls)
         self.assertIn(("delete_manual", 5), FakeReports.calls)
+        # Flytta till annan person
+        self.c.req("POST", "/tid/flytta", {"csrf": csrf, "back": back, "kalla": "Sitoo", "ref": "1001",
+                                           "fran": "Anna Andersson", "till": "Bo Berg"})
+        self.c.req("POST", "/tid/flytta", {"csrf": csrf, "back": back, "kalla": "Manuell", "ref": "5",
+                                           "fran": "Anna Andersson", "till": "Bo Berg"})
+        self.c.req("POST", "/tid/flytta", {"csrf": csrf, "back": back, "kalla": "Sitoo", "ref": "9",
+                                           "fran": "Bo Berg", "till": "Bo Berg"})
+        self.assertIn(("move_order", 1001, "Anna Andersson", "Bo Berg"), FakeReports.calls)
+        self.assertIn(("move_manual", 5, "Bo Berg"), FakeReports.calls)
+        self.assertNotIn(("move_order", 9, "Bo Berg", "Bo Berg"), FakeReports.calls)
         # Elak back-adress ignoreras
         _, loc, _ = self.c.req("POST", "/tid/ta-bort", {"csrf": csrf, "back": "//evil.example", "order_id": "1"})
         self.assertEqual(loc, "/tid")
