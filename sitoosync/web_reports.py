@@ -10,11 +10,24 @@ from decimal import Decimal, InvalidOperation
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from .reports import (
-    DEFAULT_ACCOUNTS, Reports, build_verification, month_period, parse_payment_accounts,
-    payroll_period, payroll_period_for, recent_months, summarize_time,
+    CASH, DEFAULT_ACCOUNTS, Reports, build_verification, format_chart, format_payment_map, month_period,
+    parse_chart, parse_payment_accounts, parse_payment_map, payroll_period, payroll_period_for, recent_months, summarize_time,
 )
 
 log = logging.getLogger("sitoosync.web")
+
+# Fasta konton i verifikationen: (nyckel i DEFAULT_ACCOUNTS, rubrik)
+FIXED_ACCOUNTS = [
+    ("net_25", "Försäljning 25 % moms"), ("vat_25", "Utgående moms 25 %"),
+    ("net_12", "Försäljning 12 % moms"), ("vat_12", "Utgående moms 12 %"),
+    ("net_6", "Försäljning 6 % moms"), ("vat_6", "Utgående moms 6 %"),
+    ("net_0", "Försäljning momsfri"), ("rounding", "Öresavrundning"),
+    ("bank", "Kontanter insatta på banken"), ("cash", "Kontanter kvar i kassan"),
+]
+
+def note_html(note: str) -> str:
+    return f' <span class="muted small">({esc(note)})</span>' if note else ""
+
 
 WEEKDAYS = ["mån", "tis", "ons", "tor", "fre", "lör", "sön"]
 
@@ -439,7 +452,151 @@ class ReportPagesMixin:
         deposits = reports.deposits(start, end)
         total_dep = sum((Decimal(d["Belopp"]) for d in deposits), Decimal("0.00"))
         accounts, pay_accounts = self._accounts()
-        return build_verification(zrows, total_dep, accounts, pay_accounts), deposits
+        chart = parse_chart(self._settings().get("acc_chart") or "")
+        return build_verification(zrows, total_dep, accounts, pay_accounts, chart), deposits
+
+    # ------------------------------------------------------------ kontoinställningar
+    def page_accounts(self) -> None:
+        s = self._settings()
+        q = self._q()
+        chart = parse_chart(s.get("acc_chart") or "")
+        pmap = parse_payment_map(s.get("acc_payments") or "")
+        accounts, _ = self._accounts()
+
+        # Betalsätt från z-rapporterna plus de som redan har ett konto
+        db_names: list[str] = []
+        db_note = ""
+        reports = self._reports()
+        if reports is None:
+            db_note = "Databasen är inte inställd, så betalsätten från z-rapporterna kan inte visas."
+        else:
+            try:
+                db_names = reports.payment_names()
+            except Exception as err:  # noqa: BLE001
+                log.warning("Kunde inte läsa betalsätt: %s", err)
+                db_note = f"Kunde inte läsa betalsätten från z-rapporterna: {err}"
+            finally:
+                reports.db.close()
+        lookup = {k.casefold(): v for k, v in pmap.items()}
+        seen = {n.casefold() for n in db_names}
+        names = db_names + [n for n in pmap if n.casefold() not in seen]
+
+        def options(selected: str, cash: bool = False) -> str:
+            out = ['<option value="">— Välj konto —</option>']
+            if cash:
+                out.append(f'<option value="{CASH}" {"selected" if selected.upper() == CASH else ""}>'
+                           'Kontanter – delas på bankning och kassa</option>')
+            known = False
+            for nr, name in chart.items():
+                sel = nr == selected
+                known = known or sel
+                out.append(f'<option value="{esc(nr)}" {"selected" if sel else ""}>{esc(nr)} {esc(name)}</option>')
+            if selected and not known and selected.upper() != CASH:
+                out.append(f'<option value="{esc(selected)}" selected>{esc(selected)} (saknas i kontoplanen)</option>')
+            return "".join(out)
+
+        # Vilka betalsätt hamnar på samma rad?
+        groups: dict[str, list[str]] = {}
+        for n in names:
+            acc = lookup.get(n.casefold(), "")
+            if acc:
+                groups.setdefault(acc, []).append(n)
+
+        pay_rows = []
+        for i, n in enumerate(names):
+            acc = lookup.get(n.casefold(), "")
+            hint = []
+            if n.casefold() not in seen and db_names:
+                hint.append("Finns inte i z-rapporterna")
+            if acc and acc.upper() != CASH and len(groups.get(acc, [])) > 1:
+                others = [o for o in groups[acc] if o != n]
+                hint.append("Summeras med " + ", ".join(others))
+            if not acc:
+                hint.append('<span class="pill warn">Saknar konto</span>')
+            hint_html = " · ".join(h if h.startswith("<") else esc(h) for h in hint)
+            pay_rows.append(
+                f'<tr><td>{esc(n)}<input type="hidden" name="pm_name_{i}" value="{esc(n)}"></td>'
+                f'<td><select name="pm_acc_{i}" aria-label="Konto för {esc(n)}">{options(acc, cash=True)}</select></td>'
+                f'<td class="muted small">{hint_html}</td></tr>')
+        pay_table = ("<p class='muted'>Inga betalsätt hittades.</p>" if not names else
+                     '<table class="compact"><thead><tr><th>Betalsätt i Sitoo</th><th>Konto</th><th></th></tr></thead>'
+                     f'<tbody>{"".join(pay_rows)}</tbody></table>')
+
+        fixed_rows = "".join(
+            f'<tr><td><label for="fx_{k}">{esc(label)}</label></td>'
+            f'<td><select id="fx_{k}" name="acc_{k}">{options(accounts.get(k, ""))}</select></td></tr>'
+            for k, label in FIXED_ACCOUNTS)
+
+        chart_rows = []
+        items = list(chart.items()) + [("", "")] * 3
+        for i, (nr, name) in enumerate(items):
+            delete = (f'<label class="check small"><input type="checkbox" name="ch_del_{i}" value="1"> Ta bort</label>'
+                      if nr else '<span class="muted small">Nytt konto</span>')
+            chart_rows.append(
+                f'<tr><td><input class="nr" type="text" inputmode="numeric" name="ch_nr_{i}" value="{esc(nr)}" '
+                f'aria-label="Kontonummer"></td><td><input type="text" name="ch_name_{i}" value="{esc(name)}" '
+                f'aria-label="Kontonamn"></td><td>{delete}</td></tr>')
+
+        csrf = self._csrf_field()
+        msgs = ""
+        if q.get("sparat"):
+            msgs += '<div class="alert a-ok">Sparat.</div>'
+        if q.get("fel"):
+            msgs += f'<div class="alert a-err">{esc(q["fel"])}</div>'
+        if db_note:
+            msgs += f'<div class="alert a-warn">{esc(db_note)}</div>'
+
+        body = f"""<h1>Konton för bokföringen</h1>
+<p class="lead"><a href="/bokforing">← Tillbaka till Bokföring</a></p>{msgs}
+<form method="post" action="/bokforing/konton">{csrf}
+<div class="card"><h2>Betalsätt</h2>
+<p class="lead small">Välj konto för varje betalsätt i z-rapporterna. Betalsätt med samma konto summeras på en rad i verifikationen, till exempel Swish QR och Swish nr på 1936. Kontanter delas på bankningar och det som ligger kvar i kassan.</p>
+{pay_table}</div>
+<div class="card"><h2>Försäljning, moms och kontanter</h2>
+<table class="compact"><tbody>{fixed_rows}</tbody></table>
+<div class="row" style="margin-top:16px"><button type="submit">Spara konton</button></div></div>
+</form>
+<form method="post" action="/bokforing/kontoplan">{csrf}
+<div class="card"><h2>Kontoplan</h2>
+<p class="lead small">Kontona som går att välja ovan. Namnet blir texten i verifikationen, till exempel <i>Försäljning – Swish</i>.</p>
+<table class="compact chart"><thead><tr><th>Konto</th><th>Namn</th><th></th></tr></thead><tbody>{"".join(chart_rows)}</tbody></table>
+<div class="row" style="margin-top:16px"><button type="submit">Spara kontoplan</button></div></div>
+</form>
+<style>{REPORT_CSS}
+table.chart input[type=text]{{width:100%}} table.chart input.nr{{width:90px}}
+table.chart td:nth-child(2){{width:100%}}
+</style>"""
+        self._page("Bokföring – konton", body, active="accounting")
+
+    def post_accounts(self, path: str, form: dict) -> None:
+        if path == "/bokforing/konton":
+            mapping = {}
+            i = 0
+            while f"pm_name_{i}" in form:
+                name, acc = form.get(f"pm_name_{i}", "").strip(), form.get(f"pm_acc_{i}", "").strip()
+                if name and acc:
+                    mapping[name] = acc
+                i += 1
+            values = {"acc_payments": format_payment_map(mapping)}
+            for k, _ in FIXED_ACCOUNTS:
+                if form.get(f"acc_{k}"):
+                    values[f"acc_{k}"] = form[f"acc_{k}"].strip()
+        else:
+            chart = {}
+            i = 0
+            while f"ch_nr_{i}" in form:
+                nr, name = form.get(f"ch_nr_{i}", "").strip(), form.get(f"ch_name_{i}", "").strip()
+                if nr and not form.get(f"ch_del_{i}"):
+                    if not nr.isdigit():
+                        return self._redirect("/bokforing/konton?" + urlencode({"fel": f"Kontot '{nr}' är inte ett nummer."}))
+                    chart[nr] = name or nr
+                i += 1
+            values = {"acc_chart": format_chart(chart)}
+        errors = self.app.store.update(values, partial=True)
+        if errors:
+            return self._redirect("/bokforing/konton?" + urlencode({"fel": " ".join(errors)}))
+        log.info("Kontoinställningar för bokföringen sparade")
+        self._redirect("/bokforing/konton?sparat=1")
 
     def page_accounting(self) -> None:
         reports = self._reports()
@@ -465,7 +622,8 @@ class ReportPagesMixin:
 
         # ---- verifikation
         ver_rows = "".join(
-            f'<tr><td>{esc(l.account)}</td><td>{esc(l.text)}</td><td class="num">{money(l.debit, True)}</td>'
+            f'<tr><td>{esc(l.account)}</td><td>{esc(l.text)}{note_html(l.note)}</td>'
+            f'<td class="num">{money(l.debit, True)}</td>'
             f'<td class="num">{money(l.credit, True)}</td></tr>' for l in v.lines)
         ver = ("<p class='muted'>Inga z-rapporter i perioden.</p>" if not v.zrows else
                '<table class="compact"><thead><tr><th>Konto</th><th>Text</th><th class="num">Debet</th>'
@@ -545,7 +703,7 @@ class ReportPagesMixin:
 <div><button type="submit">Visa</button></div></form></details>
 <div class="row" style="margin-top:12px"><a class="btn" href="/bokforing.csv?{esc(qs)}">Exportera (CSV)</a>
 <a class="btn" href="/bokforing/utskrift?{esc(qs)}" target="_blank" rel="noopener">Utskrift</a>
-<a class="btn" href="/installningar#accounting">Konton</a></div></div>
+<a class="btn" href="/bokforing/konton">Konton</a></div></div>
 {warn_html}
 <div class="card"><h2>Verifikation {esc(label)} {balanced}</h2>
 <p class="lead small">Försäljning enligt z-rapporterna {start:%Y-%m-%d} – {end:%Y-%m-%d}. Moms räknas som netto × momssats; skillnaden mot z-rapportens moms läggs på öresavrundning.</p>
@@ -567,7 +725,7 @@ class ReportPagesMixin:
             reports.db.close()
         rows = [[f"Verifikation {label}", f"{start:%Y-%m-%d}", f"{end:%Y-%m-%d}"], [],
                 ["Konto", "Text", "Debet", "Kredit"]]
-        rows += [[l.account, l.text, l.debit, l.credit] for l in v.lines]
+        rows += [[l.account, f"{l.text} ({l.note})" if l.note else l.text, l.debit, l.credit] for l in v.lines]
         rows.append(["", "Summa", v.debit, v.credit])
         rows += [[], ["Kassa", "Z-nr", "Datum", "Försäljning", "Retur", "25 % netto", "Moms 25 %", "12 % netto",
                       "Moms 12 %", "6 % netto", "Moms 6 %", "0 % netto", "Öresavrundning", "Betalningar",
@@ -583,6 +741,8 @@ class ReportPagesMixin:
                    {"Content-Disposition": f"attachment; filename=\"bokforing-{name}.csv\""})
 
     def post_accounting(self, path: str, form: dict) -> None:
+        if path in ("/bokforing/konton", "/bokforing/kontoplan"):
+            return self.post_accounts(path, form)
         back = self._back(form, "/bokforing")
         reports = self._reports()
         if reports is None:
@@ -609,6 +769,7 @@ class ReportPagesMixin:
 
 # ============================================================ UTSKRIFT
 PRINT_CSS = """
+.muted{color:#555}.small{font-size:.9em}
 *{box-sizing:border-box}
 html{background:#e9ebef}
 body{margin:0;font-family:"Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;color:#111;
@@ -751,7 +912,7 @@ class PrintPagesMixin:
             reports.db.close()
 
         ver_rows = "".join(
-            f'<tr><td>{esc(l.account)}</td><td>{esc(l.text)}</td><td class="num">{money(l.debit, True)}</td>'
+            f'<tr><td>{esc(l.account)}</td><td>{esc(l.text)}{note_html(l.note)}</td><td class="num">{money(l.debit, True)}</td>'
             f'<td class="num">{money(l.credit, True)}</td></tr>' for l in v.lines)
         verification = ('<table><thead><tr><th>Konto</th><th>Text</th><th class="num">Debet</th>'
                         f'<th class="num">Kredit</th></tr></thead><tbody>{ver_rows}<tr class="total"><td></td>'

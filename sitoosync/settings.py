@@ -61,26 +61,27 @@ class SettingsStore:
         with self._lock:
             return dict(self._values)
 
-    def update(self, form: dict) -> list[str]:
+    def update(self, form: dict, partial: bool = False) -> list[str]:
         """Sparar värden från formuläret. Tomma lösenordsfält behåller nuvarande värde.
+        Med partial=True ändras bara fälten som finns i formuläret (även kryssrutor).
 
         Returnerar en lista med fel; vid fel sparas ingenting.
         """
         with self._lock:
-            new, errors = self.preview(form)
+            new, errors = self.preview(form, partial)
             if errors:
                 return errors
             self._values = new
             self._save()
         return []
 
-    def preview(self, form: dict) -> tuple[dict, list[str]]:
+    def preview(self, form: dict, partial: bool = False) -> tuple[dict, list[str]]:
         """Nuvarande värden med formulärets ändringar, utan att spara."""
         errors: list[str] = []
         with self._lock:
             new = dict(self._values)
         for f in FIELDS:
-            if f.kind == "bool":
+            if f.kind == "bool" and not partial:
                 new[f.key] = parse_value(f, form.get(f.key, ""))
                 continue
             if f.key not in form:

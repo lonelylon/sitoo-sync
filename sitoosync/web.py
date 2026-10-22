@@ -342,7 +342,8 @@ class RequestHandler(ReportPagesMixin, PrintPagesMixin, BaseHTTPRequestHandler):
         routes = {"/": self.page_overview, "/installningar": self.page_settings, "/logg": self.page_log,
                   "/tid": self.page_time, "/tid.csv": self.csv_time, "/tid/utskrift": self.print_time,
                   "/bokforing": self.page_accounting, "/bokforing.csv": self.csv_accounting,
-                  "/bokforing/utskrift": self.print_accounting}
+                  "/bokforing/utskrift": self.print_accounting,
+                  "/bokforing/konton": self.page_accounts}
         handler = routes.get(path)
         if handler is None:
             return self._page("Hittades inte", "<h1>Sidan finns inte</h1>", status=404)
@@ -598,6 +599,12 @@ Befintliga rader skrivs över, inget tas bort. Ordrar hämtas från datumet i in
         csrf = self._csrf_field()
         sections = []
         for key, title, lead in SECTIONS:
+            if key == "accounting":
+                sections.append(f'<div class="card" id="{key}"><h2>{esc(title)}</h2>'
+                                '<p class="lead small">Kontoplan, betalsättens konton och kontona för moms och '
+                                'försäljning ställs in på sidan Bokföring.</p>'
+                                '<a class="btn" href="/bokforing/konton">Öppna kontoinställningar</a></div>')
+                continue
             fields_html = []
             for f in [f for f in FIELDS if f.section == key]:
                 fid = f"f_{f.key}"

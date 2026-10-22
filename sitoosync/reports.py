@@ -170,18 +170,46 @@ DEFAULT_ACCOUNTS = {
     "bank": "1938",
     "cash": "1911",
 }
-DEFAULT_PAYMENT_ACCOUNTS = "Kort=1937; Swish=1936; Kontant=1911"
+DEFAULT_PAYMENT_ACCOUNTS = "Kort=1937; Swish=1936; Kontant=KONTANT"
+CASH = "KONTANT"   # betalsätt som delas på bankningar och kassa
+CASH_NAMES = ("kontant", "kontanter", "cash")
 
-
-def parse_payment_accounts(text: str) -> dict[str, str]:
-    """'Kort=1937; Swish=1936' -> {'kort': '1937', 'swish': '1936'} (namn utan skiftlägeskänslighet)."""
-    out = {}
+def _pairs(text: str) -> "OrderedDict[str, str]":
+    out: "OrderedDict[str, str]" = OrderedDict()
     for part in (text or "").replace("\n", ";").split(";"):
         if "=" in part:
             k, v = part.split("=", 1)
             if k.strip() and v.strip():
-                out[k.strip().casefold()] = v.strip()
+                out[k.strip()] = v.strip()
     return out
+
+
+def _clean(text: str) -> str:
+    """Tar bort tecknen som används som avgränsare i inställningstexten."""
+    return " ".join(str(text or "").replace(";", ",").replace("=", "-").split())
+
+
+def parse_payment_map(text: str) -> "OrderedDict[str, str]":
+    """'Kort=1937; Swish QR=1936' -> {'Kort': '1937', 'Swish QR': '1936'} (namnen som de står)."""
+    return _pairs(text)
+
+
+def format_payment_map(mapping: dict[str, str]) -> str:
+    return "; ".join(f"{_clean(k)}={_clean(v)}" for k, v in mapping.items() if _clean(k) and _clean(v))
+
+
+def parse_payment_accounts(text: str) -> dict[str, str]:
+    """Som parse_payment_map men med namnen i gemener, för uppslag oavsett skiftläge."""
+    return {k.casefold(): v for k, v in _pairs(text).items()}
+
+
+def parse_chart(text: str) -> "OrderedDict[str, str]":
+    """Kontoplanen: '1936=Swish; 1937=Kort' -> {'1936': 'Swish', '1937': 'Kort'}, sorterad på konto."""
+    return OrderedDict(sorted(_pairs(text).items(), key=lambda kv: kv[0]))
+
+
+def format_chart(chart: dict[str, str]) -> str:
+    return "; ".join(f"{_clean(k)}={_clean(v)}" for k, v in sorted(chart.items()) if _clean(k) and _clean(v))
 
 
 @dataclass
@@ -214,6 +242,7 @@ class Line:
     text: str
     debit: Decimal = ZERO
     credit: Decimal = ZERO
+    note: str = ""        # vilka betalsätt raden summerar, när det inte framgår av texten
 
 
 @dataclass
@@ -283,14 +312,17 @@ def assemble_zrows(zreports: list[dict], vatgroups: list[dict], payments: list[d
 
 
 def build_verification(zrows: list[ZRow], deposits: Decimal, accounts: dict[str, str],
-                       payment_accounts: dict[str, str]) -> Verification:
+                       payment_accounts: dict[str, str], chart: dict[str, str] | None = None) -> Verification:
     """Konteringsförslag som i Excel-bladet 'Försäljning'.
 
     Kredit: netto per momssats och moms (räknad som netto x sats, som i Excel).
     Skillnaden mellan räknad och rapporterad moms läggs tillsammans med
     öresavrundningen på öresavrundningskontot.
-    Debet: betalsätten. Kontanter delas på bank (bankningar) och kassa (resten).
+    Debet: betalsätten, en rad per konto. Betalsätt med samma konto summeras.
+    Kontanter delas på bank (bankningar) och kassa (resten).
     """
+    chart = chart or {}
+    payment_accounts = {k.casefold(): v for k, v in payment_accounts.items()}
     a = {**DEFAULT_ACCOUNTS, **{k: v for k, v in accounts.items() if v}}
     warnings: list[str] = []
     lines: list[Line] = []
@@ -300,17 +332,35 @@ def build_verification(zrows: list[ZRow], deposits: Decimal, accounts: dict[str,
     for z in zrows:
         for name, amount in z.payments.items():
             pay_totals[name] = pay_totals.get(name, ZERO) + amount
-    cash_names = {n for n in pay_totals if n.casefold() in ("kontant", "kontanter", "cash")}
+    def is_cash(name: str) -> bool:
+        mapped = payment_accounts.get(name.casefold())
+        if mapped and mapped.upper() == CASH:
+            return True
+        # Äldre inställning, t.ex. 'Kontant=1911': kontanter delas fortfarande på bank och kassa
+        return name.casefold() in CASH_NAMES and mapped in (None, "", a["cash"])
+
+    cash_names = {n for n in pay_totals if is_cash(n)}
     cash_total = sum((pay_totals[n] for n in cash_names), ZERO)
+    by_account: "OrderedDict[str, list]" = OrderedDict()   # konto -> [summa, [betalsätt]]
     for name, amount in pay_totals.items():
-        if name in cash_names or amount == 0:
+        if name in cash_names:
             continue
         account = payment_accounts.get(name.casefold())
         if not account:
-            warnings.append(f"Betalsättet '{name}' saknar konto i inställningarna.")
+            if amount == 0:
+                continue
+            warnings.append(f"Betalsättet '{name}' saknar konto. Välj konto under Bokföring › Konton.")
             account = "????"
-        lines.append(Line(account, f"Försäljning – {name}", debit=amount if amount > 0 else ZERO,
-                          credit=-amount if amount < 0 else ZERO))
+        entry = by_account.setdefault(account, [ZERO, []])
+        entry[0] += amount
+        entry[1].append(name)
+    for account, (amount, names) in by_account.items():
+        if amount == 0:
+            continue
+        label = chart.get(account) or ", ".join(names)
+        note = ", ".join(names) if ", ".join(names) != label else ""
+        lines.append(Line(account, f"Försäljning – {label}", debit=amount if amount > 0 else ZERO,
+                          credit=-amount if amount < 0 else ZERO, note=note))
     if deposits:
         lines.append(Line(a["bank"], "Bankningar – kontant", debit=deposits))
     rest = cash_total - deposits
@@ -455,6 +505,12 @@ class Reports:
         self.db.execute("UPDATE sitoo.TimeStampAdd SET Namn = %s WHERE Id = %s", (to_name, stamp_id))
 
     # ------------------------------------------------------------ bokföring
+    def payment_names(self) -> list[str]:
+        """Alla betalsätt som förekommer i z-rapporterna."""
+        rows = self._q("SELECT DISTINCT LTRIM(RTRIM(Name)) AS Name FROM sitoo.ZReportPayments "
+                       "WHERE Name IS NOT NULL AND LTRIM(RTRIM(Name)) <> ''", (), "betalsätt")
+        return sorted({r["Name"] for r in rows}, key=str.casefold)
+
     def zrows(self, start: date, end: date) -> list[ZRow]:
         zs = self._q(zreports_sql(), (start, end), "z-rapporter")
         vats = self._q(zchildren_sql("ZReportVatGroups",

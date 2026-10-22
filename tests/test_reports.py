@@ -6,7 +6,8 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sitoosync.reports import (
-    D, Stamp, assemble_zrows, build_verification, parse_payment_accounts, payroll_period,
+    D, Stamp, assemble_zrows, build_verification, format_chart, format_payment_map, parse_chart,
+    parse_payment_accounts, parse_payment_map, payroll_period,
     payroll_period_for, summarize_time,
 )
 
@@ -118,6 +119,52 @@ class VerificationTests(unittest.TestCase):
         v = build_verification(assemble_zrows(zs, vats, pays), Decimal("2000.00"), {}, self.ACC)
         cash = [l for l in v.lines if l.account == "1911"][0]
         self.assertEqual((cash.debit, cash.credit), (Decimal("0.00"), Decimal("750.00")))
+
+    def test_payments_on_same_account_summed_on_one_line(self):
+        zs = [z("R1", 1, 1, date(2026, 9, 1), "1250.00")]
+        vats = [vg("R1", 1, "sales", 25, "1000.00", "250.00")]
+        pays = [pay("R1", 1, "sales", "Swish QR", "1000.00"), pay("R1", 1, "sales", "Swish nr", "200.00"),
+                pay("R1", 1, "sales", "Kort", "50.00")]
+        acc = parse_payment_accounts("Kort=1937; Swish QR=1936; Swish nr=1936")
+        v = build_verification(assemble_zrows(zs, vats, pays), Decimal("0"), {}, acc,
+                               parse_chart("1936=Swish; 1937=Kort"))
+        swish = [l for l in v.lines if l.account == "1936"]
+        self.assertEqual(len(swish), 1)
+        self.assertEqual(swish[0].debit, Decimal("1200.00"))
+        self.assertEqual(swish[0].text, "Försäljning – Swish")
+        self.assertEqual(swish[0].note, "Swish QR, Swish nr")
+        kort = [l for l in v.lines if l.account == "1937"][0]
+        self.assertEqual((kort.text, kort.note), ("Försäljning – Kort", ""))
+        self.assertEqual(v.diff, Decimal("0.00"))
+        # Utan kontoplan blir texten betalsättens namn
+        v = build_verification(assemble_zrows(zs, vats, pays), Decimal("0"), {}, acc)
+        self.assertIn("Försäljning – Swish QR, Swish nr", [l.text for l in v.lines])
+
+    def test_cash_token_and_legacy_cash_account(self):
+        zs = [z("R1", 1, 1, date(2026, 9, 1), "1250.00")]
+        vats = [vg("R1", 1, "sales", 25, "1000.00", "250.00")]
+        pays = [pay("R1", 1, "sales", "Kontanter SEK", "1250.00")]
+        v = build_verification(assemble_zrows(zs, vats, pays), Decimal("1000.00"), {},
+                               parse_payment_accounts("Kontanter SEK=KONTANT"))
+        debit = {l.account: l.debit for l in v.lines}
+        self.assertEqual((debit["1938"], debit["1911"]), (Decimal("1000.00"), Decimal("250.00")))
+        # 'Kontant' mappat mot ett vanligt konto som inte är kassan bokförs bara där
+        pays = [pay("R1", 1, "sales", "Kontant", "1250.00")]
+        v = build_verification(assemble_zrows(zs, vats, pays), Decimal("0"), {},
+                               parse_payment_accounts("Kontant=1930"))
+        self.assertEqual([(l.account, l.debit) for l in v.lines if l.debit], [("1930", Decimal("1250.00"))])
+        # Äldre inställning 'Kontant=1911' delas fortfarande på bank och kassa
+        v = build_verification(assemble_zrows(zs, vats, pays), Decimal("1000.00"), {},
+                               parse_payment_accounts("Kontant=1911"))
+        debit = {l.account: l.debit for l in v.lines}
+        self.assertEqual((debit["1938"], debit["1911"]), (Decimal("1000.00"), Decimal("250.00")))
+
+    def test_parse_and_format_settings_text(self):
+        m = parse_payment_map("Swish QR=1936; Kort=1937")
+        self.assertEqual(list(m.items()), [("Swish QR", "1936"), ("Kort", "1937")])
+        self.assertEqual(format_payment_map({"A;b": "1=2"}), "A,b=1-2")
+        self.assertEqual(list(parse_chart("3011=Försäljning; 1936=Swish")), ["1936", "3011"])
+        self.assertEqual(format_chart({"1937": "Kort", "1936": "Swish"}), "1936=Swish; 1937=Kort")
 
     def test_unknown_payment_warns(self):
         zs = [z("R1", 1, 1, date(2026, 9, 1), "125.00")]

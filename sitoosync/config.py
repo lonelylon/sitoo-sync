@@ -72,9 +72,16 @@ FIELDS: list[Field] = [
     Field("report_payroll_start", "REPORT_PAYROLL_START", "Löneperioden börjar dag", "int", 21, "time",
           help="21 ger perioden 21:a till 20:e. 1 ger hela kalendermånader"),
     # Rapporter: bokföring
+    # Konton ställs in på sidan Bokföring › Konton
     Field("acc_payments", "ACC_PAYMENTS", "Konton för betalsätt", "str",
-          "Kort=1937; Swish=1936; Kontant=1911", "accounting",
-          help="Betalsättets namn i z-rapporten = konto, separerade med semikolon. Kontanter delas på bank och kassa"),
+          "Kort=1937; Swish=1936; Kontant=KONTANT", "accounting",
+          help="Betalsätt=konto. KONTANT delar beloppet på bankningar och kassa"),
+    Field("acc_chart", "ACC_CHART", "Kontoplan", "str",
+          "1911=Kassa; 1936=Swish; 1937=Kort; 1938=Bank; "
+          "2610=Utgående moms 25 %; 2621=Utgående moms 12 %; 2622=Utgående moms 6 %; "
+          "3009=Försäljning 6 % moms; 3010=Försäljning 12 % moms; 3011=Försäljning 25 % moms; "
+          "3015=Försäljning momsfri; 3740=Öres- och kronutjämning", "accounting",
+          help="Konto=namn"),
     Field("acc_net_25", "ACC_NET_25", "Försäljning 25 %", "str", "3011", "accounting"),
     Field("acc_vat_25", "ACC_VAT_25", "Utgående moms 25 %", "str", "2610", "accounting"),
     Field("acc_net_12", "ACC_NET_12", "Försäljning 12 %", "str", "3010", "accounting"),

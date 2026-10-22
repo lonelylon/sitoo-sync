@@ -449,6 +449,9 @@ class FakeReports:
     def restore_order_stamp(self, o):
         FakeReports.calls.append(("restore", o))
 
+    def payment_names(self):
+        return ["Kort", "Swish QR", "Swish nr"]
+
     def move_order_stamp(self, o, f, t):
         FakeReports.calls.append(("move_order", o, f, t))
 
@@ -550,6 +553,45 @@ class ReportPageTests(ReportBase):
         # Elak back-adress ignoreras
         _, loc, _ = self.c.req("POST", "/tid/ta-bort", {"csrf": csrf, "back": "//evil.example", "order_id": "1"})
         self.assertEqual(loc, "/tid")
+
+    def test_account_settings_page_and_save(self):
+        status, _, html = self.c.req("GET", "/bokforing/konton")
+        self.assertEqual(status, 200)
+        self.assertIn('name="pm_name_1" value="Swish QR"', html)
+        self.assertIn("Saknar konto", html)                        # Swish QR har inget konto ännu
+        self.assertIn('<option value="1936" >1936 Swish</option>', html)
+        self.assertIn("Kontanter – delas på bankning och kassa", html)
+        enrich_before = self.store.values()["enrich_orders"]
+        csrf = self.c.csrf("/bokforing/konton")
+        form = {"csrf": csrf, "pm_name_0": "Kort", "pm_acc_0": "1937", "pm_name_1": "Swish QR", "pm_acc_1": "1936",
+                "pm_name_2": "Swish nr", "pm_acc_2": "1936", "pm_name_3": "Kontant", "pm_acc_3": "KONTANT",
+                "acc_net_25": "3001"}
+        _, loc, _ = self.c.req("POST", "/bokforing/konton", form)
+        self.assertEqual(loc, "/bokforing/konton?sparat=1")
+        v = self.store.values()
+        self.assertEqual(v["acc_payments"], "Kort=1937; Swish QR=1936; Swish nr=1936; Kontant=KONTANT")
+        self.assertEqual(v["acc_net_25"], "3001")
+        self.assertEqual(v["enrich_orders"], enrich_before)        # kryssrutor på andra sidor rörs inte
+        _, _, html = self.c.req("GET", "/bokforing/konton")
+        self.assertIn("Summeras med Swish nr", html)
+        self.assertIn("3001 (saknas i kontoplanen)", html)
+        # Verifikationen: Swish QR och Swish nr på en rad
+        FakeReports.zdata[2][1]["Name"] = "Swish QR"
+        FakeReports.zdata[2].append({"RegisterId": "R1", "ZReportId": 1845, "Kind": "sales", "Name": "Swish nr",
+                                     "MoneyTotal": "0.00"})
+        _, _, html = self.c.req("GET", "/bokforing?manad=2026-09")
+        self.assertIn("Försäljning – Swish", html)
+
+    def test_chart_save_and_validation(self):
+        csrf = self.c.csrf("/bokforing/konton")
+        _, loc, _ = self.c.req("POST", "/bokforing/kontoplan", {
+            "csrf": csrf, "ch_nr_0": "1936", "ch_name_0": "Swish", "ch_nr_1": "1937", "ch_name_1": "Kort",
+            "ch_del_1": "1", "ch_nr_2": "1930", "ch_name_2": "Företagskonto", "ch_nr_3": "", "ch_name_3": ""})
+        self.assertEqual(loc, "/bokforing/konton?sparat=1")
+        self.assertEqual(self.store.values()["acc_chart"], "1930=Företagskonto; 1936=Swish")
+        _, loc, _ = self.c.req("POST", "/bokforing/kontoplan", {"csrf": csrf, "ch_nr_0": "19x6", "ch_name_0": "Fel"})
+        self.assertIn("fel=", loc)
+        self.assertEqual(self.store.values()["acc_chart"], "1930=Företagskonto; 1936=Swish")
 
     def test_accounting_page(self):
         status, _, html = self.c.req("GET", "/bokforing?manad=2026-09")
