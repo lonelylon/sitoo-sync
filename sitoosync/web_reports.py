@@ -586,10 +586,40 @@ class ReportPagesMixin:
 <p class="lead small">Ladda ner rapporterna i Excel-format från Worldlines Merchant Portal (reports.bambora.com) och ladda upp dem här.
 Både <b>månadsrapporter</b> och <b>utbetalningsrapporter</b> fungerar, och flera filer kan väljas samtidigt.
 Samma transaktion sparas bara en gång, så det gör inget om rapporterna överlappar.</p>
-<form method="post" action="/bokforing/worldline/ladda-upp" enctype="multipart/form-data" class="filters">{csrf}
-<div style="flex:1;min-width:260px"><label for="wl_files">Excel-filer (.xlsx)</label>
-<input id="wl_files" type="file" name="filer" accept=".xlsx" multiple required></div>
-<div><button class="primary" type="submit">Ladda upp</button></div></form></div>"""
+<form method="post" action="/bokforing/worldline/ladda-upp" enctype="multipart/form-data" id="wl_form">{csrf}
+<label class="drop" id="wl_drop" for="wl_files">
+<input id="wl_files" type="file" name="filer" accept=".xlsx" multiple required>
+<span class="drop-icon" aria-hidden="true">⤓</span>
+<span class="drop-main">Dra och släpp Excel-filerna här</span>
+<span class="drop-sub">eller klicka för att välja filer (.xlsx)</span>
+<span class="drop-files" id="wl_list"></span>
+</label>
+<div class="row" style="margin-top:12px"><button class="primary" type="submit" id="wl_btn">Ladda upp</button>
+<span class="muted small" id="wl_status"></span></div></form>
+<script>(function(){{
+  var drop=document.getElementById('wl_drop'),input=document.getElementById('wl_files'),
+      form=document.getElementById('wl_form'),list=document.getElementById('wl_list'),
+      btn=document.getElementById('wl_btn'),status=document.getElementById('wl_status'),depth=0;
+  function show(){{var n=[].map.call(input.files,function(f){{return f.name}});
+    list.textContent=n.length?n.join(', '):'';drop.classList.toggle('has',n.length>0)}}
+  function send(){{if(!input.files.length)return;btn.disabled=true;
+    status.textContent='Laddar upp '+input.files.length+(input.files.length==1?' fil':' filer')+' …';
+    drop.classList.add('busy');form.submit()}}
+  input.addEventListener('change',show);
+  form.addEventListener('submit',function(e){{e.preventDefault();send()}});
+  function hasFiles(e){{return e.dataTransfer&&[].indexOf.call(e.dataTransfer.types,'Files')>=0}}
+  // Hela sidan tar emot filer, så att en miss bredvid rutan inte öppnar filen i webbläsaren
+  window.addEventListener('dragenter',function(e){{if(!hasFiles(e))return;e.preventDefault();depth++;drop.classList.add('over')}});
+  window.addEventListener('dragover',function(e){{if(!hasFiles(e))return;e.preventDefault();e.dataTransfer.dropEffect='copy'}});
+  window.addEventListener('dragleave',function(){{depth=Math.max(0,depth-1);if(!depth)drop.classList.remove('over')}});
+  window.addEventListener('drop',function(e){{if(!hasFiles(e))return;e.preventDefault();depth=0;drop.classList.remove('over');
+    var dt=new DataTransfer(),skipped=[];
+    [].forEach.call(e.dataTransfer.files,function(f){{if(/\.xlsx$/i.test(f.name))dt.items.add(f);else skipped.push(f.name)}});
+    if(!dt.files.length){{status.textContent='Bara Excel-filer (.xlsx) kan laddas upp.';return}}
+    input.files=dt.files;show();
+    if(skipped.length)status.textContent='Hoppar över: '+skipped.join(', ');
+    send()}});
+}})();</script></div>"""
 
         # ---- månader
         mrows = []
@@ -679,6 +709,17 @@ som ännu inte finns i någon uppladdad utbetalning.</p>
 <div class="topgrid"><div>{upload}{merch_html}</div>{month_card}</div>
 {day_card}{files_card}
 <style>{REPORT_CSS}
+.drop{{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
+text-align:center;padding:28px 16px;border:2px dashed var(--line);border-radius:10px;cursor:pointer;
+background:var(--bg);transition:border-color .15s,background .15s;font-weight:400;margin:0}}
+.drop:hover,.drop:focus-within{{border-color:var(--muted)}}
+.drop.over{{border-color:var(--accent);background:var(--run-bg)}}
+.drop.busy{{opacity:.6;pointer-events:none}}
+.drop input{{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}}
+.drop-icon{{font-size:28px;line-height:1;color:var(--accent)}}
+.drop-main{{font-weight:600}} .drop-sub{{font-size:13px;color:var(--muted)}}
+.drop-files{{font-size:13px;color:var(--text);margin-top:6px;word-break:break-word}}
+.drop.has .drop-sub{{display:none}}
 table.wl tr.sel td{{background:var(--bg)}} table.wl tr.sel td:first-child{{font-weight:650}}
 @media (min-width:1400px){{.topgrid2{{display:grid;grid-template-columns:1fr 1fr;gap:0 20px;align-items:start}}}}
 </style>"""
@@ -718,7 +759,7 @@ table.wl tr.sel td{{background:var(--bg)}} table.wl tr.sel td:first-child{{font-
                     first, last = rep.dates
                     span = f", transaktioner {first:%Y-%m-%d} – {last:%Y-%m-%d}" if first else ""
                     lines.append(f"{name}: {rep.label.lower()} {rep.period or ''} – {total} transaktioner, "
-                                 f"{new} nya, {len(rep.payouts)} utbetalningar{span}.")
+                                 f"{new} nya, {len(rep.payouts)} {'utbetalning' if len(rep.payouts) == 1 else 'utbetalningar'}{span}.")
                     log.info("Worldline-rapport inläst: %s (%s, %s transaktioner, %s nya)", name, rep.kind, total, new)
                 except WorldlineError as err:
                     lines.append(f"Fel i {name}: {err}")

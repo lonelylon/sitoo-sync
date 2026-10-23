@@ -100,7 +100,7 @@ Två sidor i webbgränssnittet ersätter de tidigare Excel-filerna.
 
 ### Worldline (Bambora)
 
-Sitoos z-rapporter visar vad kunderna betalade med kort, men inte Worldlines avgifter. Under **Bokföring > Worldline** laddar du upp Worldlines rapporter i Excel-format från Merchant Portal (reports.bambora.com). Både **månadsrapporter** och **utbetalningsrapporter** fungerar, flera filer kan väljas samtidigt, och en transaktion som finns i flera rapporter sparas bara en gång. Worldline har inget öppet API för rapporterna, därför används filerna.
+Sitoos z-rapporter visar vad kunderna betalade med kort, men inte Worldlines avgifter. Under **Bokföring > Worldline** laddar du upp Worldlines rapporter i Excel-format från Merchant Portal (reports.bambora.com). Både **månadsrapporter** och **utbetalningsrapporter** fungerar. Dra och släpp filerna på sidan eller välj dem med filväljaren, flera åt gången, och en transaktion som finns i flera rapporter sparas bara en gång. Worldline har inget öppet API för rapporterna, därför används filerna.
 
 - **Kortavgifter:** avgifterna för transaktioner i perioden, och andra avgifter som dras på utbetalningarna, bokförs på 6570. De dras från kortkontot 1937, så att 1937 visar det som betalas ut. Kontona ställs in under **Bokföring > Konton**.
 - **Täckning och kontroll:** sidan visar per månad och per dag Sitoos kortbetalningar jämfört med Worldlines transaktioner. Dagar med kortförsäljning men utan Worldline-data markeras *Saknas*, dagar där beloppen skiljer sig markeras *Avvikelse*, och transaktioner som ännu inte finns i någon uppladdad utbetalning saknar avgift. Samma varningar visas på verifikationen.
