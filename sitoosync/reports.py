@@ -311,6 +311,44 @@ def assemble_zrows(zreports: list[dict], vatgroups: list[dict], payments: list[d
     return sorted(rows.values(), key=lambda r: (r.register_number or 0, r.day, r.zreport_id))
 
 
+def is_cash_payment(name: str, payment_accounts: dict[str, str], cash_account: str) -> bool:
+    """Kontanter delas på bankningar och kassa. payment_accounts har namnen i gemener."""
+    mapped = payment_accounts.get(name.casefold())
+    if mapped and mapped.upper() == CASH:
+        return True
+    # Äldre inställning, t.ex. 'Kontant=1911': kontanter delas fortfarande på bank och kassa
+    return name.casefold() in CASH_NAMES and mapped in (None, "", cash_account)
+
+
+def payment_columns(names: list[str], payment_accounts: dict[str, str], chart: dict[str, str],
+                    cash_account: str) -> "OrderedDict[str, list[str]]":
+    """Betalsätten grupperade som i verifikationen: rubrik -> betalsätt.
+    Betalsätt med samma konto hamnar i samma kolumn, kontanter i en egen."""
+    payment_accounts = {k.casefold(): v for k, v in payment_accounts.items()}
+    groups: "OrderedDict[str, list[str]]" = OrderedDict()
+    labels: dict[str, str] = {}
+    for n in names:
+        if is_cash_payment(n, payment_accounts, cash_account):
+            key = CASH
+        else:
+            key = payment_accounts.get(n.casefold()) or f"?{n}"
+        groups.setdefault(key, []).append(n)
+    out: "OrderedDict[str, list[str]]" = OrderedDict()
+    for key, members in groups.items():
+        if key == CASH:
+            label = "Kontanter"
+        elif key.startswith("?"):
+            label = members[0]
+        else:
+            label = chart.get(key) or ", ".join(members)
+        labels[key] = label
+        out[label if label not in out else f"{label} ({key})"] = members
+    # Kontanter sist, som i verifikationen
+    if "Kontanter" in out:
+        out.move_to_end("Kontanter")
+    return out
+
+
 def build_verification(zrows: list[ZRow], deposits: Decimal, accounts: dict[str, str],
                        payment_accounts: dict[str, str], chart: dict[str, str] | None = None) -> Verification:
     """Konteringsförslag som i Excel-bladet 'Försäljning'.
@@ -332,14 +370,7 @@ def build_verification(zrows: list[ZRow], deposits: Decimal, accounts: dict[str,
     for z in zrows:
         for name, amount in z.payments.items():
             pay_totals[name] = pay_totals.get(name, ZERO) + amount
-    def is_cash(name: str) -> bool:
-        mapped = payment_accounts.get(name.casefold())
-        if mapped and mapped.upper() == CASH:
-            return True
-        # Äldre inställning, t.ex. 'Kontant=1911': kontanter delas fortfarande på bank och kassa
-        return name.casefold() in CASH_NAMES and mapped in (None, "", a["cash"])
-
-    cash_names = {n for n in pay_totals if is_cash(n)}
+    cash_names = {n for n in pay_totals if is_cash_payment(n, payment_accounts, a["cash"])}
     cash_total = sum((pay_totals[n] for n in cash_names), ZERO)
     by_account: "OrderedDict[str, list]" = OrderedDict()   # konto -> [summa, [betalsätt]]
     for name, amount in pay_totals.items():

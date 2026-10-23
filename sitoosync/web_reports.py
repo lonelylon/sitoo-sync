@@ -11,7 +11,8 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from .reports import (
     CASH, DEFAULT_ACCOUNTS, Reports, build_verification, format_chart, format_payment_map, month_period,
-    parse_chart, parse_payment_accounts, parse_payment_map, payroll_period, payroll_period_for, recent_months, summarize_time,
+    parse_chart, parse_payment_accounts, parse_payment_map, payment_columns, payroll_period,
+    payroll_period_for, recent_months, summarize_time,
 )
 
 log = logging.getLogger("sitoosync.web")
@@ -104,9 +105,17 @@ details>summary{cursor:pointer;color:var(--accent)}
 details[open]>summary{margin-bottom:8px}
 .inline-form{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .person h2{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
-table.persons tr.prow{cursor:pointer}
-table.persons tr.prow:hover td{background:var(--bg)}
-table.persons tr.prow.open td{background:var(--bg);border-bottom-color:transparent}
+table.persons tr.prow,table.zt tr.prow{cursor:pointer}
+table.persons tr.prow:hover td,table.zt tr.prow:hover td{background:var(--bg)}
+table.persons tr.prow.open td,table.zt tr.prow.open td{background:var(--bg);border-bottom-color:transparent}
+table.zt td,table.zt th{padding:6px 7px}
+.zgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:4px 24px;padding:6px 0;
+white-space:normal}
+.zgrid table.inner{width:100%}.zgrid table.inner td:first-child{white-space:normal}
+.zgrid input[type=date]{max-width:100%}
+@media (max-width:720px){table.zt .opt{display:none}}
+.zgrid h3{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:6px 0 2px}
+.zgrid .inline-form{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .toggle{border:0;background:none;padding:0;font:inherit;color:var(--accent);font-weight:600;cursor:pointer;
 display:inline-flex;align-items:center;gap:8px}
 .toggle .chev{display:inline-block;transition:transform .15s;color:var(--muted);width:1em}
@@ -630,49 +639,91 @@ table.chart td:nth-child(2){{width:100%}}
                f'<th class="num">Kredit</th></tr></thead><tbody>{ver_rows}<tr class="total"><td></td><td>Summa</td>'
                f'<td class="num">{money(v.debit)}</td><td class="num">{money(v.credit)}</td></tr></tbody></table>')
 
-        # ---- z-rapporter
-        rates = sorted({r for z in v.zrows for r in z.vat_net}, reverse=True)
+        # ---- z-rapporter: en kompakt rad per z-rapport, detaljerna fälls ut vid klick
+        accounts, pay_accounts = self._accounts()
+        chart = parse_chart(self._settings().get("acc_chart") or "")
         pay_names = sorted({n for z in v.zrows for n in z.payments}, key=str.casefold)
-        head = ("<th>Kassa</th><th>Z-nr</th><th>Datum</th><th class='num'>Försäljning</th><th class='num'>Retur</th>"
-                + "".join(f"<th class='num'>{r} % netto</th>" + (f"<th class='num'>Moms {r} %</th>" if r else "")
-                          for r in rates)
-                + "<th class='num'>Öresavr.</th>"
-                + "".join(f"<th class='num'>{esc(n)}</th>" for n in pay_names)
-                + "<th class='num'>Uttag till bank</th><th class='no-print'></th>")
+        columns = payment_columns(pay_names, pay_accounts, chart, accounts["cash"])
+        zero = Decimal(0)
+
+        def pay_sum(z, members):
+            return sum((z.payments.get(n, zero) for n in members), zero)
+
+        def vat_sum(z):
+            return sum(z.vat_amount.values(), zero)
+
+        head = ("<th>Datum</th><th>Kassa</th><th class='opt'>Z-nr</th><th class='num'>Försäljning</th>"
+                "<th class='num opt'>Retur</th><th class='num opt'>Moms</th>"
+                + "".join(f"<th class='num' title='{esc(', '.join(m))}'>{esc(c)}</th>" for c, m in columns.items())
+                + "<th class='num opt'>Till bank</th>")
+        ncols = 7 + len(columns)
         zrows_html = []
-        for z in v.zrows:
+        for i, z in enumerate(v.zrows):
             fixed = (f' <span class="pill warn" title="Ursprungligt datum {z.original_day:%Y-%m-%d}">rättat</span>'
                      if z.fixed else "")
-            cells = "".join(f"<td class='num'>{money(z.vat_net.get(r), True)}</td>"
-                            + (f"<td class='num'>{money(z.vat_amount.get(r), True)}</td>" if r else "")
-                            for r in rates)
-            pays = "".join(f"<td class='num'>{money(z.payments.get(n), True)}</td>" for n in pay_names)
-            fix_form = (f'<details><summary>Ändra datum</summary><form method="post" action="/bokforing/datum" '
-                        f'class="inline-form">{csrf}<input type="hidden" name="back" value="{esc(back)}">'
+            pays = "".join(f"<td class='num'>{money(pay_sum(z, m), True)}</td>" for m in columns.values())
+            # detaljer
+            vat_rows = "".join(
+                f"<tr><td>{r} %</td><td class='num'>{money(z.vat_net.get(r), True)}</td>"
+                f"<td class='num'>{money(z.vat_amount.get(r), True) if r else ''}</td></tr>"
+                for r in sorted(z.vat_net, reverse=True))
+            pay_rows = "".join(f"<tr><td>{esc(n)}</td><td class='num'>{money(a, True)}</td></tr>"
+                               for n, a in sorted(z.payments.items(), key=lambda kv: kv[0].casefold()))
+            facts = [("Öresavrundning", money(z.rounding, True) or "0,00"),
+                     ("Totalt enligt z-rapporten", money(z.total)),
+                     ("Kvitton", "" if z.receipts is None else str(z.receipts))]
+            if z.closed:
+                facts.append(("Stängd", f"{z.closed:%Y-%m-%d %H:%M}"))
+            if z.fixed:
+                facts.append(("Ursprungligt datum", f"{z.original_day:%Y-%m-%d}"))
+            fact_rows = "".join(f"<tr><td>{esc(k)}</td><td class='num'>{esc(val)}</td></tr>" for k, val in facts)
+            fix_form = (f'<form method="post" action="/bokforing/datum" class="inline-form no-print">{csrf}'
+                        f'<input type="hidden" name="back" value="{esc(back)}">'
                         f'<input type="hidden" name="register_id" value="{esc(z.register_id)}">'
                         f'<input type="hidden" name="zreport_id" value="{z.zreport_id}">'
-                        f'<input type="date" name="datum" value="{z.day:%Y-%m-%d}">'
-                        '<button class="sm">Spara</button>'
-                        + ('<button class="sm" name="atgard" value="aterstall">Återställ</button>' if z.fixed else "")
-                        + '</form></details>')
+                        f'<input type="date" name="datum" value="{z.day:%Y-%m-%d}" aria-label="Nytt datum">'
+                        '<button class="sm">Spara datum</button>'
+                        + ('<button class="sm" name="atgard" value="aterstall">Återställ datum</button>' if z.fixed else "")
+                        + '</form>')
+            detail = (
+                '<div class="zgrid">'
+                '<div><h3>Moms</h3><table class="compact inner"><thead><tr><th>Sats</th><th class="num">Netto</th>'
+                f'<th class="num">Moms</th></tr></thead><tbody>{vat_rows or "<tr><td colspan=3 class=muted>Ingen moms</td></tr>"}'
+                '</tbody></table></div>'
+                '<div><h3>Betalsätt</h3><table class="compact inner"><tbody>'
+                f'{pay_rows or "<tr><td class=muted>Inga betalningar</td></tr>"}</tbody></table></div>'
+                f'<div><h3>Övrigt</h3><table class="compact inner"><tbody>{fact_rows}</tbody></table></div>'
+                f'<div><h3>Datum</h3><p class="muted small">Ändra om z-rapporten hör till en annan dag.</p>{fix_form}</div>'
+                '</div>')
             zrows_html.append(
-                f"<tr><td>{esc(z.kassa)}</td><td>{z.zreport_id}</td><td>{day_fmt(z.day)}{fixed}</td>"
-                f"<td class='num'>{money(z.sales)}</td><td class='num'>{money(z.refunds, True)}</td>{cells}"
-                f"<td class='num'>{money(z.rounding, True)}</td>{pays}"
-                f"<td class='num'>{money(z.cash_to_bank, True)}</td><td class='no-print'>{fix_form}</td></tr>")
-        sums = ("<tr class='total'><td>Summa</td><td></td><td></td>"
-                f"<td class='num'>{money(sum((z.sales for z in v.zrows), Decimal(0)))}</td>"
-                f"<td class='num'>{money(sum((z.refunds for z in v.zrows), Decimal(0)), True)}</td>"
-                + "".join(f"<td class='num'>{money(sum((z.vat_net.get(r, Decimal(0)) for z in v.zrows), Decimal(0)))}</td>"
-                          + (f"<td class='num'>{money(sum((z.vat_amount.get(r, Decimal(0)) for z in v.zrows), Decimal(0)))}</td>"
-                             if r else "") for r in rates)
-                + f"<td class='num'>{money(sum((z.rounding for z in v.zrows), Decimal(0)), True)}</td>"
-                + "".join(f"<td class='num'>{money(sum((z.payments.get(n, Decimal(0)) for z in v.zrows), Decimal(0)))}</td>"
-                          for n in pay_names)
-                + f"<td class='num'>{money(sum((z.cash_to_bank for z in v.zrows), Decimal(0)), True)}</td><td class='no-print'></td></tr>")
+                f'<tr class="prow" data-i="z{i}"><td><button type="button" class="toggle" id="b-z{i}" '
+                f'aria-expanded="false" aria-controls="d-z{i}"><span class="chev">▸</span> {day_fmt(z.day)}</button>{fixed}</td>'
+                f"<td>{esc(z.kassa)}</td><td class='opt'>{z.zreport_id}</td>"
+                f"<td class='num'>{money(z.sales)}</td><td class='num opt'>{money(z.refunds, True)}</td>"
+                f"<td class='num opt'>{money(vat_sum(z), True)}</td>{pays}"
+                f"<td class='num opt'>{money(z.cash_to_bank, True)}</td></tr>"
+                f'<tr class="pdetail" id="d-z{i}" hidden><td colspan="{ncols}"><div class="detail-wrap">{detail}</div></td></tr>')
+        sums = ("<tr class='total'><td>Summa</td><td></td><td class='opt'></td>"
+                f"<td class='num'>{money(sum((z.sales for z in v.zrows), zero))}</td>"
+                f"<td class='num opt'>{money(sum((z.refunds for z in v.zrows), zero), True)}</td>"
+                f"<td class='num opt'>{money(sum((vat_sum(z) for z in v.zrows), zero), True)}</td>"
+                + "".join(f"<td class='num'>{money(sum((pay_sum(z, m) for z in v.zrows), zero))}</td>"
+                          for m in columns.values())
+                + f"<td class='num opt'>{money(sum((z.cash_to_bank for z in v.zrows), zero), True)}</td></tr>")
         ztable = ("<p class='muted'>Inga z-rapporter i perioden.</p>" if not v.zrows else
-                  f'<div class="scroll"><table class="compact"><thead><tr>{head}</tr></thead>'
-                  f'<tbody>{"".join(zrows_html)}{sums}</tbody></table></div>')
+                  '<div class="row no-print" style="margin-bottom:8px">'
+                  '<button type="button" class="sm" onclick="zAll(true)">Visa alla</button>'
+                  '<button type="button" class="sm" onclick="zAll(false)">Dölj alla</button>'
+                  '<span class="muted small">Klicka på en z-rapport för moms per sats, betalsätt och datumrättning.</span></div>'
+                  f'<div class="scroll"><table class="compact zt"><thead><tr>{head}</tr></thead>'
+                  f'<tbody>{"".join(zrows_html)}{sums}</tbody></table></div>'
+                  """<script>(function(){
+  function set(i,open){var d=document.getElementById('d-'+i),b=document.getElementById('b-'+i);if(!d)return;
+    d.hidden=!open;b.setAttribute('aria-expanded',open?'true':'false');b.closest('tr').classList.toggle('open',open)}
+  window.zAll=function(open){document.querySelectorAll('table.zt tr.prow').forEach(function(r){set(r.dataset.i,open)})};
+  document.querySelectorAll('table.zt tr.prow').forEach(function(r){r.addEventListener('click',function(e){
+    if(e.target.closest('a,input,select,form'))return;set(r.dataset.i,document.getElementById('d-'+r.dataset.i).hidden)})});
+})();</script>""")
 
         # ---- bankningar
         dep_rows = "".join(
@@ -709,7 +760,7 @@ table.chart td:nth-child(2){{width:100%}}
 <p class="lead small">Försäljning enligt z-rapporterna {start:%Y-%m-%d} – {end:%Y-%m-%d}. Moms räknas som netto × momssats; skillnaden mot z-rapportens moms läggs på öresavrundning.</p>
 {ver}</div>
 <div class="card"><h2>Z-rapporter ({len(v.zrows)} st)</h2>
-<p class="lead small">Datum är dagen kassan öppnades. Använd Ändra datum om en z-rapport hör till en annan dag.</p>{ztable}</div>
+<p class="lead small">Datum är dagen kassan öppnades. Betalsätt med samma konto visas i samma kolumn.</p>{ztable}</div>
 {dep_card}
 <style>{REPORT_CSS}</style>"""
         self._page("Bokföring", body, active="accounting")

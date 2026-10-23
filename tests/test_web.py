@@ -581,6 +581,7 @@ class ReportPageTests(ReportBase):
                                      "MoneyTotal": "0.00"})
         _, _, html = self.c.req("GET", "/bokforing?manad=2026-09")
         self.assertIn("Försäljning – Swish", html)
+        self.assertIn("<th class='num' title='Swish nr, Swish QR'>Swish</th>", html)   # en kolumn i z-tabellen
 
     def test_chart_save_and_validation(self):
         csrf = self.c.csrf("/bokforing/konton")

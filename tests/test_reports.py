@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from sitoosync.reports import (
     D, Stamp, assemble_zrows, build_verification, format_chart, format_payment_map, parse_chart,
-    parse_payment_accounts, parse_payment_map, payroll_period,
+    parse_payment_accounts, parse_payment_map, payment_columns, payroll_period,
     payroll_period_for, summarize_time,
 )
 
@@ -158,6 +158,13 @@ class VerificationTests(unittest.TestCase):
                                parse_payment_accounts("Kontant=1911"))
         debit = {l.account: l.debit for l in v.lines}
         self.assertEqual((debit["1938"], debit["1911"]), (Decimal("1000.00"), Decimal("250.00")))
+
+    def test_payment_columns_grouped_by_account(self):
+        cols = payment_columns(["Kontant", "Kort", "Presentkort", "Swish QR", "Swish nr"],
+                               parse_payment_accounts("Kort=1937; Swish QR=1936; Swish nr=1936; Kontant=KONTANT"),
+                               parse_chart("1936=Swish; 1937=Kort"), "1911")
+        self.assertEqual(list(cols.items()), [("Kort", ["Kort"]), ("Presentkort", ["Presentkort"]),
+                                              ("Swish", ["Swish QR", "Swish nr"]), ("Kontanter", ["Kontant"])])
 
     def test_parse_and_format_settings_text(self):
         m = parse_payment_map("Swish QR=1936; Kort=1937")
