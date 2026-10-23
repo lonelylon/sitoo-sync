@@ -5,6 +5,7 @@ import csv
 import html
 import io
 import logging
+import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -543,23 +544,34 @@ class ReportPagesMixin:
             return self._not_configured("Worldline", "accounting")
         q = self._q()
         today = date.today()
-        # tolv månader bakåt
+        # Visa de senaste tolv månaderna, eller ett helt år. En vald månad utanför de
+        # senaste tolv månaderna visar det året.
         y, m = today.year, today.month - 11
         while m <= 0:
             y, m = y - 1, m + 12
-        start = date(y, m, 1)
+        recent_start = date(y, m, 1)
+        year_q = q.get("ar", "")
+        sel_q = q.get("manad") or ""
+        if not year_q and re.fullmatch(r"\d{4}-\d{2}", sel_q) and sel_q < f"{recent_start:%Y-%m}":
+            year_q = sel_q[:4]
+        if year_q.isdigit() and 2000 <= int(year_q) <= today.year:
+            year = int(year_q)
+            start, end = date(year, 1, 1), min(date(year, 12, 31), today)
+        else:
+            year, start, end = None, recent_start, today
         accounts, pay_accounts = self._accounts()
         merchants = self._wl_merchants()
         try:
-            zrows = reports.zrows(start, today)
-            wl = reports.wl_daily(start, today, merchants)
+            first_year = reports.first_data_year() or today.year
+            zrows = reports.zrows(start, end)
+            wl = reports.wl_daily(start, end, merchants)
             files = reports.wl_files(30)
             all_merchants = reports.wl_merchants()
-            sel = q.get("manad") or ""
+            sel = sel_q
             months = group_months(compare_days(
-                start, today, sitoo_card_by_day(zrows, pay_accounts, accounts["card"], accounts["cash"]), wl))
+                start, end, sitoo_card_by_day(zrows, pay_accounts, accounts["card"], accounts["cash"]), wl))
             if not sel:
-                sel = next((mc.month for mc in months if mc.status not in ("ok", "ingen")), f"{today:%Y-%m}")
+                sel = next((mc.month for mc in months if mc.status not in ("ok", "ingen")), months[0].month if months else "")
             sel_month = next((mc for mc in months if mc.month == sel), None)
             payouts = []
             if sel_month:
@@ -622,6 +634,7 @@ Samma transaktion sparas bara en gång, så det gör inget om rapporterna överl
 }})();</script></div>"""
 
         # ---- månader
+        year_qs = f"&ar={year}" if year else ""
         mrows = []
         for mc in months:
             st = mc.status
@@ -631,12 +644,17 @@ Samma transaktion sparas bara en gång, så det gör inget om rapporterna överl
             dev = f"{len(mc.deviations)}" if mc.deviations else ""
             cls = ' class="sel"' if mc.month == sel else ""
             mrows.append(
-                f'<tr{cls}><td><a href="/bokforing/worldline?manad={mc.month}#dagar">{mc.month}</a></td>'
+                f'<tr{cls}><td><a href="/bokforing/worldline?manad={mc.month}{year_qs}#dagar">{mc.month}</a></td>'
                 f'<td class="num">{money(mc.sitoo, True)}</td><td class="num">{money(mc.worldline, True)}</td>'
                 f'<td class="num">{money(mc.diff, True)}</td><td class="num">{money(-mc.fee, True)}</td>'
                 f'<td class="num">{len(mc.missing) or ""}</td><td class="num">{dev}</td>'
                 f'<td class="num">{mc.unpaid or ""}</td><td>{pill(label)}</td></tr>')
-        month_card = f"""<div class="card"><h2>Täckning per månad</h2>
+        tabs = [("", "Senaste 12 mån")] + [(str(yr), str(yr)) for yr in range(today.year, first_year - 1, -1)]
+        current = "" if year is None else str(year)
+        year_tabs = '<div class="yeartabs">' + "".join(
+            f'<a class="{"on" if key == current else ""}" href="/bokforing/worldline{"?ar=" + key if key else ""}">{label}</a>'
+            for key, label in tabs) + "</div>"
+        month_card = f"""<div class="card"><h2>Täckning per månad</h2>{year_tabs}
 <p class="lead small">Kortbetalningar enligt Sitoos z-rapporter jämfört med Worldlines transaktioner, per transaktionsdatum.
 <i>Saknas</i> betyder dagar med kortförsäljning i Sitoo men inga transaktioner hos Worldline. <i>Utan avgift</i> är transaktioner
 som ännu inte finns i någon uppladdad utbetalning.</p>
@@ -720,7 +738,10 @@ background:var(--bg);transition:border-color .15s,background .15s;font-weight:40
 .drop-main{{font-weight:600}} .drop-sub{{font-size:13px;color:var(--muted)}}
 .drop-files{{font-size:13px;color:var(--text);margin-top:6px;word-break:break-word}}
 .drop.has .drop-sub{{display:none}}
-table.wl tr.sel td{{background:var(--bg)}} table.wl tr.sel td:first-child{{font-weight:650}}
+table.wl tr.sel td{{background:var(--bg)}}
+.yeartabs{{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 12px}}
+.yeartabs a{{padding:4px 11px;border-radius:999px;border:1px solid var(--line);text-decoration:none;color:var(--muted);font-size:13px}}
+.yeartabs a.on,.yeartabs a:hover{{background:var(--bg);color:var(--text);border-color:var(--muted)}} table.wl tr.sel td:first-child{{font-weight:650}}
 @media (min-width:1400px){{.topgrid2{{display:grid;grid-template-columns:1fr 1fr;gap:0 20px;align-items:start}}}}
 </style>"""
         self._page("Worldline", body, active="accounting", wide=True)

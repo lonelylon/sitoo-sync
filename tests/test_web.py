@@ -479,6 +479,9 @@ class FakeReports:
     def wl_merchants(self):
         return ["Butiken", "Andra butiken"]
 
+    def first_data_year(self):
+        return 2023
+
     def wl_payouts(self, start, end, merchants):
         return [{"PayoutDate": _date(2026, 9, 2), "PayoutRef": "B1", "Merchant": "Butiken", "Transactions": 2,
                  "Turnover": _Dec("19962.50"), "Fees": _Dec("-200.00"), "Adjustments": _Dec("0"),
@@ -671,6 +674,16 @@ class ReportPageTests(ReportBase):
         _, _, html = self.c.req("GET", "/bokforing/worldline?manad=2026-09")
         self.assertIn("Stämmer", html)
         self.assertIn("B1", html)
+        # Äldre år går att välja
+        self.assertIn('href="/bokforing/worldline?ar=2023"', html)
+        FakeReports.calls.clear()
+        status, _, html = self.c.req("GET", "/bokforing/worldline?ar=2024")
+        self.assertEqual(status, 200)
+        self.assertIn(("zrows", _date(2024, 1, 1), _date(2024, 12, 31)), FakeReports.calls)
+        self.assertIn("2024-01", html)
+        FakeReports.calls.clear()
+        self.c.req("GET", "/bokforing/worldline?manad=2023-05")      # gammal månad visar det året
+        self.assertIn(("zrows", _date(2023, 1, 1), _date(2023, 12, 31)), FakeReports.calls)
 
     def test_accounting_page(self):
         status, _, html = self.c.req("GET", "/bokforing?manad=2026-09")

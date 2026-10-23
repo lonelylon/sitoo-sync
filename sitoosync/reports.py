@@ -616,6 +616,13 @@ class Reports:
                        (), "worldline period")
         return (rows[0]["Fran"], rows[0]["Till"]) if rows else (None, None)
 
+    def first_data_year(self) -> int | None:
+        """Första året med z-rapporter eller Worldline-transaktioner."""
+        rows = self._q("SELECT MIN(D) AS D FROM (SELECT MIN(Dag) AS D FROM sitoo.vZRapporter "
+                       "UNION ALL SELECT MIN(TransactionDate) FROM sitoo.WorldlineTransactions) x", (), "första år")
+        d = rows[0]["D"] if rows else None
+        return d.year if d else None
+
     def payment_names(self) -> list[str]:
         """Alla betalsätt som förekommer i z-rapporterna."""
         rows = self._q("SELECT DISTINCT LTRIM(RTRIM(Name)) AS Name FROM sitoo.ZReportPayments "
