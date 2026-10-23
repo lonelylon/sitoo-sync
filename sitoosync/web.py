@@ -14,11 +14,11 @@ from datetime import datetime, timezone
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from .config import FIELDS, ConfigError
 from .db import Database
-from .settings import SettingsStore
+from .settings import AREAS, LEVEL_LABELS, SettingsStore, can
 from .sitoo import SitooClient, SitooError
 from .web_reports import PrintPagesMixin, ReportPagesMixin
 from .worker import JOB_LABELS, RESET_PATTERNS, LogBuffer, SyncWorker, next_run, utcnow
@@ -142,6 +142,9 @@ a{color:var(--accent)}
 header{background:var(--card);border-bottom:1px solid var(--line)}
 .wrap{max-width:1080px;margin:0 auto;padding:0 20px}
 .wrap.wide{max-width:1860px}
+.ro form[method=post]:not(.keep),.ro .edit-only,.ro details.fix{display:none!important}
+header a.who{color:var(--muted);text-decoration:none;font-size:14px;white-space:nowrap}
+header a.who:hover{color:var(--text)}
 header .wrap{display:flex;align-items:center;gap:24px;height:58px}
 .brand{font-weight:650;letter-spacing:-.01em;white-space:nowrap}
 nav{display:flex;gap:4px;flex:1;overflow-x:auto}
@@ -225,10 +228,11 @@ class WebApp:
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------ sessioner
-    def new_session(self) -> str:
+    def new_session(self, username: str = "admin") -> str:
         token = secrets.token_urlsafe(32)
         with self._lock:
-            self.sessions[token] = {"csrf": secrets.token_urlsafe(24), "expires": time.time() + SESSION_HOURS * 3600}
+            self.sessions[token] = {"csrf": secrets.token_urlsafe(24), "user": username,
+                                    "expires": time.time() + SESSION_HOURS * 3600}
         return token
 
     def get_session(self, token: str | None) -> dict | None:
@@ -247,6 +251,13 @@ class WebApp:
     def end_session(self, token: str | None) -> None:
         with self._lock:
             self.sessions.pop(token or "", None)
+
+    def end_user_sessions(self, username: str, keep: str | None = None) -> None:
+        """Loggar ut en användare överallt (t.ex. när lösenordet byts eller användaren tas bort)."""
+        with self._lock:
+            for t in [t for t, s in self.sessions.items()
+                      if s.get("user", "").casefold() == username.casefold() and t != keep]:
+                del self.sessions[t]
 
     # ------------------------------------------------------------ databas
     def _db(self) -> Database | None:
@@ -333,22 +344,32 @@ class RequestHandler(ReportPagesMixin, PrintPagesMixin, BaseHTTPRequestHandler):
     def _page(self, title: str, body: str, active: str = "", nav: bool = True, refresh: int | None = None,
               status: int = 200, wide: bool = False) -> None:
         wrap = "wrap wide" if wide else "wrap"
-        links = [("/", "Översikt", "home"), ("/tid", "Tidrapport", "time"), ("/bokforing", "Bokföring", "accounting"),
-                 ("/installningar", "Inställningar", "settings"), ("/logg", "Logg", "log")]
+        user = getattr(self, "user", None)
+        links = [("/", "Översikt", "home", ("oversikt", "las")), ("/tid", "Tidrapport", "time", ("tid", "egen")),
+                 ("/bokforing", "Bokföring", "accounting", ("bokforing", "las")),
+                 ("/installningar", "Inställningar", "settings", ("admin", "")),
+                 ("/anvandare", "Användare", "users", ("admin", "")), ("/logg", "Logg", "log", ("logg", "las"))]
         nav_html = ""
+        body_cls = ""
         if nav:
             items = "".join(f'<a href="{href}" class="{"on" if key == active else ""}">{label}</a>'
-                            for href, label, key in links)
+                            for href, label, key, need in links if can(user, *need))
             csrf = self._session_csrf()
-            nav_html = (f'<header><div class="{wrap}"><div class="brand">Sitoo Sync</div><nav>{items}</nav>'
-                        f'<form class="inline" method="post" action="/loggaut">'
+            who = (f'<a class="who" href="/konto" title="Mitt konto">{esc(user.get("name") or user["username"])}</a>'
+                   if user else "")
+            nav_html = (f'<header><div class="{wrap}"><div class="brand">Sitoo Sync</div><nav>{items}</nav>{who}'
+                        f'<form class="inline keep" method="post" action="/loggaut">'
                         f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
                         f'<button class="sm" type="submit">Logga ut</button></form></div></header>')
+            area = {"home": "oversikt", "time": "tid", "accounting": "bokforing"}.get(active)
+            if area and not can(user, area, "andra"):
+                body_cls = ' class="ro"'
+
         meta = f'<meta http-equiv="refresh" content="{refresh}">' if refresh else ""
         doc = (f'<!doctype html><html lang="sv"><head><meta charset="utf-8">'
                f'<meta name="viewport" content="width=device-width,initial-scale=1">{meta}'
                f'<title>{esc(title)} · Sitoo Sync</title><style>{CSS}</style></head>'
-               f'<body>{nav_html}<main><div class="{wrap}">{body}</div></main></body></html>')
+               f'<body{body_cls}>{nav_html}<main><div class="{wrap}">{body}</div></main></body></html>')
         self._send(status, doc)
 
     def _session_csrf(self) -> str:
@@ -370,14 +391,25 @@ class RequestHandler(ReportPagesMixin, PrintPagesMixin, BaseHTTPRequestHandler):
             return self._redirect("/forsta-start") if path != "/forsta-start" else self.page_setup()
         if path == "/loggain":
             return self.page_login()
-        if not self.app.get_session(self._token()):
+        session = self.app.get_session(self._token())
+        if not session:
             return self._redirect("/loggain")
+        self.user = self.app.store.get_user(session.get("user"))
+        if not self.user:
+            self.app.end_session(self._token())
+            return self._redirect("/loggain")
+        need = self._required("GET", path)
+        if need and not can(self.user, *need):
+            if path == "/":
+                return self._redirect(self._start_page())
+            return self._forbidden()
         routes = {"/": self.page_overview, "/installningar": self.page_settings, "/logg": self.page_log,
                   "/tid": self.page_time, "/tid.csv": self.csv_time, "/tid/utskrift": self.print_time,
                   "/bokforing": self.page_accounting, "/bokforing.csv": self.csv_accounting,
                   "/bokforing/utskrift": self.print_accounting,
                   "/bokforing/konton": self.page_accounts,
-                  "/bokforing/worldline": self.page_worldline}
+                  "/bokforing/worldline": self.page_worldline,
+                  "/anvandare": self.page_users, "/konto": self.page_account}
         handler = routes.get(path)
         if handler is None:
             return self._page("Hittades inte", "<h1>Sidan finns inte</h1>", status=404)
@@ -400,6 +432,16 @@ class RequestHandler(ReportPagesMixin, PrintPagesMixin, BaseHTTPRequestHandler):
                 return self._json({"ok": False, "message": "Ogiltig begäran, ladda om sidan"}, 403)
             return self._page("Fel", '<div class="alert a-err">Ogiltig begäran. Ladda om sidan och försök igen.</div>',
                               status=403)
+        self.user = self.app.store.get_user(session.get("user"))
+        if not self.user:
+            self.app.end_session(self._token())
+            return self._redirect("/loggain")
+        need = self._required("POST", path)
+        if need and not can(self.user, *need):
+            if path.startswith("/api/"):
+                return self._json({"ok": False, "message": "Du har inte behörighet"}, 403)
+            log.warning("Nekad åtgärd %s för %s", path, self.user["username"])
+            return self._forbidden()
 
         if path == "/loggaut":
             self.app.end_session(self._token())
@@ -408,6 +450,8 @@ class RequestHandler(ReportPagesMixin, PrintPagesMixin, BaseHTTPRequestHandler):
             return self.post_settings(form)
         if path == "/losenord":
             return self.post_password(form)
+        if path.startswith("/anvandare/"):
+            return self.post_users(path, form)
         if path == "/paus":
             self.app.store.set_paused(True)
             log.info("Synken pausad från webbgränssnittet")
@@ -435,14 +479,48 @@ class RequestHandler(ReportPagesMixin, PrintPagesMixin, BaseHTTPRequestHandler):
             return self.api_test_db(form)
         return self._page("Hittades inte", "<h1>Sidan finns inte</h1>", status=404)
 
+    # ------------------------------------------------------------ behörighet
+    @staticmethod
+    def _required(method: str, path: str) -> tuple[str, str] | None:
+        """Behörigheten som krävs för en sida eller åtgärd. None = alla inloggade."""
+        if path in ("/konto", "/losenord", "/loggaut"):
+            return None
+        if path == "/":
+            return ("oversikt", "las")
+        if path in ("/paus", "/starta") or path.startswith(("/kor/", "/hamta-om/")):
+            return ("oversikt", "andra")
+        if path.startswith(("/installningar", "/anvandare", "/api/")):
+            return ("admin", "")
+        if path.startswith("/logg"):
+            return ("logg", "las")
+        if path == "/tid" or path.startswith(("/tid.", "/tid/")):
+            return ("tid", "andra") if method == "POST" else ("tid", "egen")
+        if path == "/bokforing/konton":
+            return ("bokforing", "andra")
+        if path == "/bokforing" or path.startswith(("/bokforing.", "/bokforing/")):
+            return ("bokforing", "andra") if method == "POST" else ("bokforing", "las")
+        return ("admin", "")
+
+    def _start_page(self) -> str:
+        for path, need in (("/", ("oversikt", "las")), ("/tid", ("tid", "egen")),
+                           ("/bokforing", ("bokforing", "las")), ("/logg", ("logg", "las"))):
+            if can(self.user, *need):
+                return path
+        return "/konto"
+
+    def _forbidden(self) -> None:
+        self._page("Ingen behörighet", "<h1>Ingen behörighet</h1><div class='alert a-warn'>Du har inte behörighet "
+                   "till den här sidan. Be en administratör om åtkomst.</div>", status=403)
+
     # ------------------------------------------------------------ inloggning
     def page_setup(self, error: str = "") -> None:
         alert = f'<div class="alert a-err">{esc(error)}</div>' if error else ""
         body = f"""<div class="auth"><div class="card">
 <h1>Välkommen</h1>
-<p class="lead">Välj ett lösenord för webbgränssnittet. Det skyddar dina Sitoo- och databasuppgifter.</p>
+<p class="lead">Skapa administratören för webbgränssnittet. Fler användare kan läggas till sedan.</p>
 {alert}
 <form method="post" action="/forsta-start">
+<p><label for="un">Användarnamn</label><input id="un" type="text" name="username" value="admin" autocomplete="username" required></p>
 <p><label for="p1">Lösenord</label><input id="p1" type="password" name="password" autocomplete="new-password" required minlength="{MIN_PASSWORD}"></p>
 <p><label for="p2">Upprepa lösenordet</label><input id="p2" type="password" name="password2" autocomplete="new-password" required></p>
 <button class="primary" type="submit">Spara och fortsätt</button>
@@ -454,47 +532,202 @@ class RequestHandler(ReportPagesMixin, PrintPagesMixin, BaseHTTPRequestHandler):
         if self.app.store.has_password():
             return self._redirect("/loggain")
         pw, pw2 = form.get("password", ""), form.get("password2", "")
+        username = (form.get("username") or "admin").strip()
         if len(pw) < MIN_PASSWORD:
             return self.page_setup(f"Lösenordet måste vara minst {MIN_PASSWORD} tecken")
         if pw != pw2:
             return self.page_setup("Lösenorden är inte lika")
-        self.app.store.set_password(pw)
-        log.info("Lösenord för webbgränssnittet skapat")
-        token = self.app.new_session()
+        try:
+            self.app.store.save_user(username, name="Administratör", admin=True, password=pw, create=True)
+        except ValueError as err:
+            return self.page_setup(str(err))
+        log.info("Administratören %s skapad", username)
+        token = self.app.new_session(username)
         return self._redirect("/installningar", {"Set-Cookie": self._cookie(token)})
 
     @staticmethod
     def _cookie(token: str) -> str:
         return f"sid={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_HOURS * 3600}"
 
-    def page_login(self, error: str = "") -> None:
+    def page_login(self, error: str = "", username: str = "") -> None:
         alert = f'<div class="alert a-err">{esc(error)}</div>' if error else ""
         body = f"""<div class="auth"><div class="card">
 <h1>Sitoo Sync</h1>
 {alert}
 <form method="post" action="/loggain">
-<p><label for="pw">Lösenord</label><input id="pw" type="password" name="password" autocomplete="current-password" autofocus required></p>
+<p><label for="un">Användarnamn</label><input id="un" type="text" name="username" value="{esc(username)}" autocomplete="username" {"" if username else "autofocus"} required></p>
+<p><label for="pw">Lösenord</label><input id="pw" type="password" name="password" autocomplete="current-password" {"autofocus" if username else ""} required></p>
 <button class="primary" type="submit">Logga in</button>
 </form></div></div>"""
         self._page("Logga in", body, nav=False, status=401 if error else 200)
 
     def post_login(self, form: dict) -> None:
-        if self.app.store.check_password(form.get("password", "")):
-            token = self.app.new_session()
-            return self._redirect("/", {"Set-Cookie": self._cookie(token)})
+        username = (form.get("username") or "admin").strip()
+        user = self.app.store.authenticate(username, form.get("password", ""))
+        if user:
+            token = self.app.new_session(user["username"])
+            log.info("%s loggade in", user["username"])
+            self.user = user
+            return self._redirect(self._start_page(), {"Set-Cookie": self._cookie(token)})
         time.sleep(1)  # bromsar gissningsförsök
-        return self.page_login("Fel lösenord")
+        log.warning("Misslyckad inloggning för %s", username)
+        return self.page_login("Fel användarnamn eller lösenord", username)
+
+    # ------------------------------------------------------------ mitt konto
+    def page_account(self, error: str = "", notice: str = "") -> None:
+        u = self.user
+        rights = ("Administratör (allt)" if u.get("admin") else
+                  ", ".join(f"{label}: {LEVEL_LABELS[(u.get('perms') or {}).get(key, '')].lower()}"
+                            for key, label, _levels, _help in AREAS))
+        person = f"<p class='muted small'>Kopplad till {esc(u['person'])} i tidrapporten.</p>" if u.get("person") else ""
+        msgs = (f'<div class="alert a-err">{esc(error)}</div>' if error else "") + \
+               (f'<div class="alert a-ok">{esc(notice)}</div>' if notice else "")
+        csrf = self._csrf_field()
+        body = f"""<h1>Mitt konto</h1>{msgs}
+<div class="card"><h2>{esc(u.get("name") or u["username"])} <span class="muted small">({esc(u["username"])})</span></h2>
+<p class="lead small">Behörighet: {esc(rights)}</p>{person}</div>
+<div class="card"><h2>Byt lösenord</h2>
+<form method="post" action="/losenord">{csrf}<div class="grid" style="margin-top:12px">
+<div><label for="cur">Nuvarande lösenord</label><input id="cur" type="password" name="current" autocomplete="current-password"></div>
+<div><label for="n1">Nytt lösenord</label><input id="n1" type="password" name="new" autocomplete="new-password"></div>
+<div><label for="n2">Upprepa nytt lösenord</label><input id="n2" type="password" name="new2" autocomplete="new-password"></div>
+</div><div class="row" style="margin-top:16px"><button type="submit">Byt lösenord</button></div></form></div>"""
+        self._page("Mitt konto", body)
 
     def post_password(self, form: dict) -> None:
-        if not self.app.store.check_password(form.get("current", "")):
-            return self.page_settings(error="Nuvarande lösenord stämmer inte")
+        name = self.user["username"]
+        if not self.app.store.check_user_password(name, form.get("current", "")):
+            return self.page_account(error="Nuvarande lösenord stämmer inte")
         new, new2 = form.get("new", ""), form.get("new2", "")
         if len(new) < MIN_PASSWORD:
-            return self.page_settings(error=f"Nytt lösenord måste vara minst {MIN_PASSWORD} tecken")
+            return self.page_account(error=f"Nytt lösenord måste vara minst {MIN_PASSWORD} tecken")
         if new != new2:
-            return self.page_settings(error="De nya lösenorden är inte lika")
-        self.app.store.set_password(new)
-        return self.page_settings(notice="Lösenordet är bytt")
+            return self.page_account(error="De nya lösenorden är inte lika")
+        self.app.store.set_user_password(name, new)
+        self.app.end_user_sessions(name, keep=self._token())
+        log.info("%s bytte lösenord", name)
+        return self.page_account(notice="Lösenordet är bytt")
+
+    # ------------------------------------------------------------ användare
+    def _staff_names(self) -> list[str]:
+        reports = None
+        try:
+            reports = self._reports()
+            return reports.staff_names() if reports is not None else []
+        except Exception as err:  # noqa: BLE001
+            log.warning("Kunde inte läsa personal: %s", err)
+            return []
+        finally:
+            if reports is not None:
+                try:
+                    reports.db.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def page_users(self, error: str = "", notice: str = "", edit: str | None = None) -> None:
+        q = {k: v[-1] for k, v in parse_qs(urlparse(self.path).query).items()}
+        edit = edit if edit is not None else q.get("u")
+        notice = notice or ("Sparat." if q.get("sparat") else "")
+        users = self.app.store.users()
+        csrf = self._csrf_field()
+
+        def rights(u):
+            if u.get("admin"):
+                return "<span class='pill ok'>Administratör</span>"
+            parts = [f"{label}: {LEVEL_LABELS[(u.get('perms') or {}).get(key, '')].lower()}"
+                     for key, label, _l, _h in AREAS if (u.get("perms") or {}).get(key)]
+            return esc(", ".join(parts)) if parts else "<span class='muted'>Ingen åtkomst</span>"
+
+        rows = "".join(
+            f'<tr><td><a href="/anvandare?u={esc(u["username"])}#form">{esc(u["username"])}</a></td>'
+            f'<td>{esc(u.get("name"))}</td><td class="small">{rights(u)}</td><td>{esc(u.get("person") or "")}</td></tr>'
+            for u in users)
+        target = self.app.store.get_user(edit) if edit else None
+        creating = target is None
+        t = target or {"username": "", "name": "", "admin": False, "perms": {}, "person": None}
+        selects = []
+        for key, label, levels, help_text in AREAS:
+            current = (t.get("perms") or {}).get(key, "")
+            opts = "".join(f'<option value="{lv}" {"selected" if lv == current else ""}>{LEVEL_LABELS[lv]}</option>'
+                           for lv in ("",) + tuple(levels))
+            selects.append(f'<div><label for="p_{key}">{esc(label)}</label><select id="p_{key}" name="perm_{key}">{opts}</select>'
+                           f'<div class="help">{esc(help_text)}</div></div>')
+        staff = self._staff_names()
+        person_opts = '<option value="">— Ingen —</option>' + "".join(
+            f'<option value="{esc(n)}" {"selected" if n == t.get("person") else ""}>{esc(n)}</option>' for n in staff)
+        if t.get("person") and t["person"] not in staff:
+            person_opts += f'<option value="{esc(t["person"])}" selected>{esc(t["person"])}</option>'
+        is_self = not creating and t["username"].casefold() == self.user["username"].casefold()
+        delete = ("" if creating or is_self else
+                  f'<form method="post" action="/anvandare/radera" class="inline">{csrf}'
+                  f'<input type="hidden" name="username" value="{esc(t["username"])}">'
+                  f'<button class="danger" onclick="return confirm(\'Ta bort användaren {esc(t["username"])}?\')">'
+                  'Ta bort användaren</button></form>')
+        msgs = (f'<div class="alert a-err">{esc(error)}</div>' if error else "") + \
+               (f'<div class="alert a-ok">{esc(notice)}</div>' if notice else "")
+        uname_field = (f'<input id="u_name" type="text" name="username" value="{esc(t["username"])}" required '
+                       'autocomplete="off">' if creating else
+                       f'<input type="hidden" name="username" value="{esc(t["username"])}">'
+                       f'<div style="padding:8px 0;font-weight:600">{esc(t["username"])}</div>')
+        body = f"""<h1>Användare</h1>{msgs}
+<div class="card"><h2>Användare ({len(users)})</h2>
+<table class="compact"><thead><tr><th>Användarnamn</th><th>Namn</th><th>Behörighet</th><th>Person i tidrapporten</th></tr></thead>
+<tbody>{rows}</tbody></table>
+<div class="row" style="margin-top:14px"><a class="btn" href="/anvandare#form">Ny användare</a></div></div>
+<div class="card" id="form"><h2>{"Ny användare" if creating else "Ändra " + esc(t["username"])}</h2>
+<form method="post" action="/anvandare/spara">{csrf}<input type="hidden" name="ny" value="{"1" if creating else ""}">
+<div class="grid">
+<div><label for="u_name">Användarnamn</label>{uname_field}</div>
+<div><label for="u_disp">Namn</label><input id="u_disp" type="text" name="name" value="{esc(t.get("name"))}"></div>
+<div><label for="u_pw">{"Lösenord" if creating else "Nytt lösenord"}</label>
+<input id="u_pw" type="password" name="password" autocomplete="new-password" {"required" if creating else ""} minlength="{MIN_PASSWORD}">
+<div class="help">{"Minst " + str(MIN_PASSWORD) + " tecken." if creating else "Lämna tomt för att behålla lösenordet."}</div></div>
+</div>
+<h3 style="margin:20px 0 8px">Behörighet</h3>
+<label class="check"><input type="checkbox" name="admin" value="1" {"checked" if t.get("admin") else ""}
+ onchange="document.getElementById('perms').style.opacity=this.checked?.4:1"> Administratör – får allt, även inställningar och användare</label>
+<div class="grid" id="perms" style="margin-top:12px;{"opacity:.4" if t.get("admin") else ""}">{"".join(selects)}
+<div><label for="u_person">Person i tidrapporten</label><select id="u_person" name="person">{person_opts}</select>
+<div class="help">Används när Tidrapport är <i>Bara egen</i>: användaren ser då bara den här personens stämplingar.</div></div>
+</div>
+<div class="row" style="margin-top:18px"><button class="primary" type="submit">Spara</button>
+{"" if creating else '<a class="btn" href="/anvandare">Avbryt</a>'}</div>
+</form>
+<div class="row" style="margin-top:14px">{delete}</div></div>
+<style>#form select{{font:inherit;padding:7px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);
+color:var(--text);width:100%;max-width:320px}} #form h3{{font-size:15px}}</style>"""
+        self._page("Användare", body, active="users")
+
+    def post_users(self, path: str, form: dict) -> None:
+        username = (form.get("username") or "").strip()
+        try:
+            if path == "/anvandare/spara":
+                creating = bool(form.get("ny"))
+                password = form.get("password") or ""
+                if password and len(password) < MIN_PASSWORD:
+                    raise ValueError(f"Lösenordet måste vara minst {MIN_PASSWORD} tecken.")
+                perms = {key: form.get(f"perm_{key}", "") for key, _l, levels, _h in AREAS
+                         if form.get(f"perm_{key}", "") in levels}
+                admin = bool(form.get("admin"))
+                if (not creating and username.casefold() == self.user["username"].casefold()
+                        and self.user.get("admin") and not admin):
+                    raise ValueError("Du kan inte ta bort din egen administratörsbehörighet.")
+                self.app.store.save_user(username, name=form.get("name", ""), admin=admin, perms=perms,
+                                         person=form.get("person"), password=password or None, create=creating)
+                if password and not creating:
+                    self.app.end_user_sessions(username, keep=self._token())
+                log.info("Användaren %s %s av %s", username, "skapad" if creating else "ändrad", self.user["username"])
+                return self._redirect(f"/anvandare?u={quote(username)}&sparat=1#form")
+            if path == "/anvandare/radera":
+                if username.casefold() == self.user["username"].casefold():
+                    raise ValueError("Du kan inte ta bort dig själv.")
+                self.app.store.delete_user(username)
+                self.app.end_user_sessions(username)
+                log.info("Användaren %s borttagen av %s", username, self.user["username"])
+                return self.page_users(notice=f"Användaren {username} är borttagen.", edit="")
+        except ValueError as err:
+            return self.page_users(error=str(err), edit=username if not form.get("ny") else "")
+        return self._redirect("/anvandare")
 
     # ------------------------------------------------------------ översikt
     def page_overview(self) -> None:
@@ -678,12 +911,8 @@ Befintliga rader skrivs över, inget tas bort. Ordrar hämtas från datumet i in
 <div class="row"><button class="primary" type="submit">Spara inställningar</button>
 <span class="muted small">Synken läser in de nya inställningarna direkt.</span></div>
 </form>
-<div class="card" style="margin-top:28px"><h2>Byt lösenord för webbgränssnittet</h2>
-<form method="post" action="/losenord">{csrf}<div class="grid" style="margin-top:12px">
-<div><label for="cur">Nuvarande lösenord</label><input id="cur" type="password" name="current" autocomplete="current-password"></div>
-<div><label for="n1">Nytt lösenord</label><input id="n1" type="password" name="new" autocomplete="new-password"></div>
-<div><label for="n2">Upprepa nytt lösenord</label><input id="n2" type="password" name="new2" autocomplete="new-password"></div>
-</div><div class="row" style="margin-top:16px"><button type="submit">Byt lösenord</button></div></form></div>
+<div class="card" style="margin-top:28px"><h2>Användare och lösenord</h2>
+<p class="lead small">Användare och deras behörigheter hanteras under <a href="/anvandare">Användare</a>. Ditt eget lösenord byter du under <a href="/konto">Mitt konto</a>.</p></div>
 <script>{TEST_JS}</script>"""
         self._page("Inställningar", body, active="settings")
 

@@ -299,7 +299,7 @@ class WebTests(WebBase):
             self.assertEqual((status, loc), (303, "/loggain"), path)
         status, _, html = self.c.req("POST", "/loggain", {"password": "fel"})
         self.assertEqual(status, 401)
-        self.assertIn("Fel lösenord", html)
+        self.assertIn("Fel användarnamn eller lösenord", html)
 
     def test_csrf_required(self):
         self.login()
@@ -750,3 +750,91 @@ class ManualAndPrintTests(ReportBase):
         self.assertIn('href="/tid/utskrift?period=2026-09&amp;person="', html)
         _, _, html = self.c.req("GET", "/bokforing?manad=2026-09")
         self.assertIn('href="/bokforing/utskrift?manad=2026-09"', html)
+
+
+class UserTests(ReportBase):
+    """Flera användare och behörigheter."""
+
+    def as_user(self, username, password="losenord123", **kw):
+        self.store.save_user(username, password=password, create=True, **kw)
+        c = Client(self.c.port)
+        status, loc, _ = c.req("POST", "/loggain", {"username": username, "password": password})
+        self.assertEqual(status, 303)
+        return c, loc
+
+    def test_old_single_password_becomes_admin(self):
+        import json as _j
+        from pathlib import Path
+        path = Path(self.store.auth_path)
+        old = self.store._hash("gammalt123")
+        path.write_text(_j.dumps(old))
+        self.assertTrue(self.store.has_password())
+        u = self.store.authenticate("admin", "gammalt123")
+        self.assertTrue(u and u["admin"])
+
+    def test_admin_creates_user_and_permissions_apply(self):
+        csrf = self.c.csrf("/anvandare")
+        _, loc, _ = self.c.req("POST", "/anvandare/spara", {
+            "csrf": csrf, "ny": "1", "username": "kassa", "name": "Kassapersonal", "password": "losenord123",
+            "perm_tid": "egen", "perm_bokforing": "", "perm_oversikt": "", "perm_logg": "", "person": "Anna Andersson"})
+        self.assertTrue(loc.startswith("/anvandare?u=kassa"))
+        u = self.store.get_user("kassa")
+        self.assertEqual((u["perms"], u["person"], u["admin"]), ({"tid": "egen"}, "Anna Andersson", False))
+        c = Client(self.c.port)
+        _, loc, _ = c.req("POST", "/loggain", {"username": "Kassa", "password": "losenord123"})
+        self.assertEqual(loc, "/tid")                       # första sidan användaren får se
+        status, _, html = c.req("GET", "/tid?period=2026-09&person=Bo+Berg")   # försöker se någon annan
+        self.assertEqual(status, 200)
+        self.assertIn("Anna Andersson", html)
+        self.assertNotIn('<option value="">Alla</option>', html)
+        self.assertNotIn("Lägg till stämpling", html)
+        self.assertNotIn('action="/tid/ta-bort"', html)
+        self.assertNotIn("Bokföring</a>", html)               # inte i menyn
+        for path in ("/bokforing", "/installningar", "/anvandare", "/logg", "/bokforing/worldline"):
+            self.assertEqual(c.req("GET", path)[0], 403, path)
+        self.assertEqual(c.req("GET", "/")[1], "/tid")
+        csrf_k = c.csrf("/konto")
+        self.assertEqual(c.req("POST", "/tid/ta-bort", {"csrf": csrf_k, "order_id": "1001"})[0], 403)
+        self.assertEqual(c.req("POST", "/kor/orders", {"csrf": csrf_k})[0], 403)
+        self.assertNotIn(("remove", 1001), FakeReports.calls)
+        # CSV är också begränsad
+        _, _, body = c.req("GET", "/tid.csv?period=2026-09&person=")
+        self.assertIn("Anna Andersson", body)
+
+    def test_read_only_bookkeeping(self):
+        c, loc = self.as_user("revisor", perms={"bokforing": "las"})
+        self.assertEqual(loc, "/bokforing")
+        status, _, html = c.req("GET", "/bokforing?manad=2026-09")
+        self.assertEqual(status, 200)
+        self.assertIn('<body class="ro">', html)
+        self.assertEqual(c.req("GET", "/bokforing/konton")[0], 403)
+        csrf = c.csrf("/bokforing")
+        self.assertEqual(c.req("POST", "/bokforing/bankning", {"csrf": csrf, "datum": "2026-09-01", "belopp": "1"})[0], 403)
+
+    def test_user_without_person_sees_nothing(self):
+        c, _ = self.as_user("ny", perms={"tid": "egen"})
+        _, _, html = c.req("GET", "/tid?period=2026-09")
+        self.assertIn("inte kopplat till någon person", html)
+        self.assertNotIn("Anna Andersson</button>", html)
+
+    def test_last_admin_and_self_protection(self):
+        csrf = self.c.csrf("/anvandare")
+        _, _, html = self.c.req("POST", "/anvandare/spara", {"csrf": csrf, "username": "admin", "name": "A"})
+        self.assertIn("egen administratörsbehörighet", html)
+        _, _, html = self.c.req("POST", "/anvandare/radera", {"csrf": csrf, "username": "admin"})
+        self.assertIn("inte ta bort dig själv", html)
+        self.assertTrue(self.store.get_user("admin")["admin"])
+
+    def test_delete_user_logs_them_out_and_own_password(self):
+        c, _ = self.as_user("tillfallig", perms={"logg": "las"})
+        self.assertEqual(c.req("GET", "/logg")[0], 200)
+        csrf = self.c.csrf("/anvandare")
+        self.c.req("POST", "/anvandare/radera", {"csrf": csrf, "username": "tillfallig"})
+        self.assertIsNone(self.store.get_user("tillfallig"))
+        self.assertEqual(c.req("GET", "/logg")[1], "/loggain")
+        # Eget lösenord
+        c2, _ = self.as_user("egen", perms={"logg": "las"})
+        csrf2 = c2.csrf("/konto")
+        _, _, html = c2.req("POST", "/losenord", {"csrf": csrf2, "current": "losenord123", "new": "nyttnytt99", "new2": "nyttnytt99"})
+        self.assertIn("Lösenordet är bytt", html)
+        self.assertTrue(self.store.check_user_password("egen", "nyttnytt99"))

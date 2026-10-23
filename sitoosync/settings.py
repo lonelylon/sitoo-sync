@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import threading
 from pathlib import Path
@@ -114,19 +115,145 @@ class SettingsStore:
     def missing(self) -> list[str]:
         return missing_required(self.values())
 
-    # ------------------------------------------------------------ auth
-    def has_password(self) -> bool:
-        return bool(_read(self.auth_path).get("hash"))
+    # ------------------------------------------------------------ användare
+    # auth.json: {"users": [{"username", "name", "admin", "perms", "person", "salt", "hash", "rounds"}]}
+    # Det äldre formatet med ett enda lösenord blir användaren "admin" med full behörighet.
+    def _auth(self) -> dict:
+        data = _read(self.auth_path)
+        if data.get("hash") and "users" not in data:
+            data = {"users": [{"username": "admin", "name": "Administratör", "admin": True, "perms": {},
+                               "person": None, "salt": data["salt"], "hash": data["hash"],
+                               "rounds": data.get("rounds", PBKDF2_ROUNDS)}]}
+        data.setdefault("users", [])
+        return data
 
-    def set_password(self, password: str) -> None:
+    def _save_auth(self, data: dict) -> None:
+        _write_atomic(self.auth_path, data)
+
+    @staticmethod
+    def _hash(password: str) -> dict:
         salt = secrets.token_bytes(16)
         digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ROUNDS)
-        _write_atomic(self.auth_path, {"salt": salt.hex(), "hash": digest.hex(), "rounds": PBKDF2_ROUNDS})
+        return {"salt": salt.hex(), "hash": digest.hex(), "rounds": PBKDF2_ROUNDS}
 
-    def check_password(self, password: str) -> bool:
-        auth = _read(self.auth_path)
-        if not auth.get("hash"):
+    @staticmethod
+    def _verify(user: dict, password: str) -> bool:
+        if not user.get("hash"):
             return False
-        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(auth["salt"]),
-                                     int(auth.get("rounds", PBKDF2_ROUNDS)))
-        return hmac.compare_digest(digest.hex(), auth["hash"])
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(user["salt"]),
+                                     int(user.get("rounds", PBKDF2_ROUNDS)))
+        return hmac.compare_digest(digest.hex(), user["hash"])
+
+    @staticmethod
+    def _public(user: dict) -> dict:
+        return {k: v for k, v in user.items() if k not in ("salt", "hash", "rounds")}
+
+    def has_password(self) -> bool:
+        """Finns det minst en användare? (Annars visas första start.)"""
+        return bool(self._auth()["users"])
+
+    def users(self) -> list[dict]:
+        with self._lock:
+            return sorted((self._public(u) for u in self._auth()["users"]), key=lambda u: u["username"])
+
+    def get_user(self, username: str | None) -> dict | None:
+        if not username:
+            return None
+        with self._lock:
+            for u in self._auth()["users"]:
+                if u["username"].casefold() == username.casefold():
+                    return self._public(u)
+        return None
+
+    def authenticate(self, username: str, password: str) -> dict | None:
+        with self._lock:
+            for u in self._auth()["users"]:
+                if u["username"].casefold() == (username or "").strip().casefold():
+                    return self._public(u) if self._verify(u, password) else None
+        # Lika lång tid oavsett om användaren finns
+        self._verify({"salt": "00" * 16, "hash": "00", "rounds": PBKDF2_ROUNDS}, password)
+        return None
+
+    def save_user(self, username: str, *, name: str = "", admin: bool = False, perms: dict | None = None,
+                  person: str | None = None, password: str | None = None, create: bool = False) -> None:
+        """Skapar eller uppdaterar en användare. Kastar ValueError med ett läsbart fel."""
+        username = (username or "").strip()
+        if not re.fullmatch(r"[\w.@-]{2,40}", username):
+            raise ValueError("Användarnamnet ska vara 2–40 tecken: bokstäver, siffror, punkt, bindestreck eller @.")
+        with self._lock:
+            data = self._auth()
+            existing = next((u for u in data["users"] if u["username"].casefold() == username.casefold()), None)
+            if create and existing:
+                raise ValueError(f"Användaren {username} finns redan.")
+            if not create and not existing:
+                raise ValueError(f"Användaren {username} finns inte.")
+            if create and not password:
+                raise ValueError("Ange ett lösenord för den nya användaren.")
+            if existing and existing.get("admin") and not admin and \
+                    sum(1 for u in data["users"] if u.get("admin")) == 1:
+                raise ValueError("Det måste finnas minst en administratör.")
+            user = existing or {"username": username}
+            user.update({"name": (name or "").strip() or username, "admin": bool(admin),
+                         "perms": {k: v for k, v in (perms or {}).items() if v}, "person": (person or "").strip() or None})
+            if password:
+                user.update(self._hash(password))
+            if not existing:
+                data["users"].append(user)
+            self._save_auth(data)
+
+    def delete_user(self, username: str) -> None:
+        with self._lock:
+            data = self._auth()
+            user = next((u for u in data["users"] if u["username"].casefold() == username.casefold()), None)
+            if not user:
+                return
+            if user.get("admin") and sum(1 for u in data["users"] if u.get("admin")) == 1:
+                raise ValueError("Det måste finnas minst en administratör.")
+            data["users"].remove(user)
+            self._save_auth(data)
+
+    def set_user_password(self, username: str, password: str) -> None:
+        with self._lock:
+            data = self._auth()
+            for u in data["users"]:
+                if u["username"].casefold() == username.casefold():
+                    u.update(self._hash(password))
+                    self._save_auth(data)
+                    return
+        raise ValueError(f"Användaren {username} finns inte.")
+
+    def check_user_password(self, username: str, password: str) -> bool:
+        return self.authenticate(username, password) is not None
+
+    # Äldre gränssnitt: administratören "admin"
+    def set_password(self, password: str, username: str = "admin") -> None:
+        if self.get_user(username):
+            self.set_user_password(username, password)
+        else:
+            self.save_user(username, name="Administratör", admin=True, password=password, create=True)
+
+    def check_password(self, password: str, username: str = "admin") -> bool:
+        return self.check_user_password(username, password)
+
+
+# =========================================================================== behörigheter
+# Område -> möjliga nivåer. Nivåerna är ordnade: egen < las < andra.
+AREAS = [
+    ("oversikt", "Översikt", ("las", "andra"), "Se synkens status. Ändra = köra, pausa och hämta om."),
+    ("tid", "Tidrapport", ("egen", "las", "andra"), "Bara egen = bara sin egen tidrapport. Ändra = stämplingar."),
+    ("bokforing", "Bokföring", ("las", "andra"), "Ändra = bankningar, datum, Worldline-filer och konton."),
+    ("logg", "Logg", ("las",), "Se loggen."),
+]
+LEVEL_LABELS = {"": "Ingen åtkomst", "egen": "Bara egen", "las": "Läsa", "andra": "Läsa och ändra"}
+_RANK = {"": 0, "egen": 1, "las": 2, "andra": 3}
+
+
+def can(user: dict | None, area: str, level: str = "las") -> bool:
+    """Har användaren minst nivån i området? Administratörer får allt; 'admin' kräver administratör."""
+    if not user:
+        return False
+    if user.get("admin"):
+        return True
+    if area == "admin":
+        return False
+    return _RANK.get((user.get("perms") or {}).get(area, ""), 0) >= _RANK.get(level, 99)

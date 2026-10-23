@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from .worldline import (
     WorldlineError, compare_days, file_hash, group_months, parse_report, sitoo_card_by_day,
 )
+from .settings import can
 from .reports import (
     CASH, DEFAULT_ACCOUNTS, Reports, build_verification, format_chart, format_payment_map, month_period,
     parse_chart, parse_payment_accounts, parse_payment_map, payment_columns, payroll_period,
@@ -177,7 +178,20 @@ class ReportPagesMixin:
         except (ValueError, TypeError):
             period = payroll_period_for(date.today(), start_day)
             start, end = payroll_period(period, start_day)
-        return period, start, end, q.get("person", ""), start_day
+        person = q.get("person", "")
+        own = self._own_person()
+        if own is not None:
+            person = own
+        return period, start, end, person, start_day
+
+    NOBODY = "\u0000ingen"
+
+    def _own_person(self) -> str | None:
+        """Med behörigheten 'Bara egen' visas bara användarens egen person (eller ingen om ingen är kopplad)."""
+        user = getattr(self, "user", None)
+        if user is None or can(user, "tid", "las"):
+            return None
+        return user.get("person") or self.NOBODY
 
     def page_time(self) -> None:
         reports = self._reports()
@@ -198,6 +212,10 @@ class ReportPagesMixin:
 
         people = summarize_time(stamps)
         all_names = sorted({p.name for p in people} | set(names), key=str.casefold)
+        own = self._own_person()
+        can_edit = can(getattr(self, "user", None), "tid", "andra")
+        if own is not None:
+            all_names = [own] if own != self.NOBODY else []
         if person:
             people = [p for p in people if p.name == person]
         back = self.path
@@ -211,7 +229,7 @@ class ReportPagesMixin:
             periods.insert(0, period)
         period_opts = "".join(f'<option value="{p}" {"selected" if p == period else ""}>{p}</option>'
                               for p in periods)
-        person_opts = '<option value="">Alla</option>' + "".join(
+        person_opts = ('' if own is not None else '<option value="">Alla</option>') + "".join(
             f'<option value="{esc(n)}" {"selected" if n == person else ""}>{esc(n)}</option>' for n in all_names)
         qs = urlencode({"period": period, "person": person})
 
@@ -222,6 +240,10 @@ class ReportPagesMixin:
             for d in p.days:
                 stamp_items = []
                 for st in d.stamps:
+                    if not can_edit:
+                        src = f"Sitoo order {st.ref}" if st.source == "Sitoo" else "Manuell"
+                        stamp_items.append(f'<tr><td>{st.at:%H:%M}</td><td class="muted small">{esc(src)}</td></tr>')
+                        continue
                     if st.source == "Sitoo":
                         action = (f'<form class="inline" method="post" action="/tid/ta-bort">{csrf}'
                                   f'<input type="hidden" name="order_id" value="{st.ref}">'
@@ -367,9 +389,10 @@ class ReportPagesMixin:
 <div class="card"><h2>Löneperiod {esc(period)} <span class="muted small">{start:%Y-%m-%d} – {end:%Y-%m-%d}</span></h2>
 <p class="lead small">In är dagens första stämpling och Ut den sista. Timmar = Ut − In. Dagar med bara en stämpling ger 0 timmar och markeras.</p>
 {summary}</div>
-{add_form}
-{manual_card}
-{removed_card}
+{add_form if can_edit else ""}
+{manual_card if can_edit else ""}
+{removed_card if can_edit else ""}
+{"" if own != self.NOBODY else '<div class="alert a-warn">Ditt konto är inte kopplat till någon person i tidrapporten. Be en administratör koppla det.</div>'}
 <style>{REPORT_CSS}</style>
 {toggle_js}"""
         self._page("Tidrapport", body, active="time")

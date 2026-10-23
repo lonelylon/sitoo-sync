@@ -111,12 +111,27 @@ Datan sparas i `sitoo.WorldlineTransactions`, `sitoo.WorldlinePayouts`, `sitoo.W
 ## Webbgränssnittet
 
 - **Översikt:** status per jobb, senaste och nästa körning, fel i klartext, antal rader per tabell, **Kör nu**, **Pausa/Starta** och **Hämta om allt** per datatyp.
-- **Inställningar:** Sitoo, SQL Server, schema och övrigt. Lösenordsfält som lämnas tomma behåller sitt sparade värde. Här byter du även lösenordet till gränssnittet.
+- **Inställningar:** Sitoo, SQL Server, schema och övrigt. Lösenordsfält som lämnas tomma behåller sitt sparade värde.
 - **Logg:** de senaste körningarna och tjänstens senaste loggrader.
 
 Inställningarna sparas i volymen `sitoo-data` och följer med när containern uppdateras.
 
-**Glömt lösenordet?** Ta bort filen `auth.json` i volymen `sitoo-data` och starta om containern. Då får du välja ett nytt lösenord, och övriga inställningar ligger kvar.
+### Användare och behörigheter
+
+Under **Användare** (bara för administratörer) läggs användare till med eget användarnamn och lösenord. Varje användare får en nivå per del av appen:
+
+| Del | Nivåer |
+|---|---|
+| Översikt | Ingen åtkomst, Läsa (se status), Läsa och ändra (köra, pausa, hämta om) |
+| Tidrapport | Ingen åtkomst, Bara egen, Läsa, Läsa och ändra (lägga till, ta bort och flytta stämplingar) |
+| Bokföring | Ingen åtkomst, Läsa, Läsa och ändra (bankningar, datum, Worldline-filer, konton) |
+| Logg | Ingen åtkomst, Läsa |
+
+**Administratör** får allt, även inställningar och användare. Med **Bara egen** kopplas användaren till en person i tidrapporten och ser då bara sina egna stämplingar, även i CSV och utskrift. Behörigheten kontrolleras på servern för varje sida och åtgärd. Var och en byter sitt eget lösenord under **Mitt konto** (namnet uppe till höger).
+
+Det tidigare lösenordet blir användaren `admin` med full behörighet. Användarna sparas i `auth.json` i volymen `sitoo-data`.
+
+**Glömt lösenordet?** En administratör kan sätta ett nytt lösenord för andra användare under **Användare**. Har den enda administratören glömt sitt: ta bort filen `auth.json` i volymen `sitoo-data` och starta om containern. Då skapar du en ny administratör; övriga användare får läggas upp igen, men inställningarna ligger kvar.
 
 ## Uppdatera
 
