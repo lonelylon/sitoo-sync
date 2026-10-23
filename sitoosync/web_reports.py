@@ -1188,6 +1188,7 @@ def print_document(title: str, orientation: str, content: str, dense: bool = Fal
     margin = 12 if orientation == "portrait" else 10
     height = (297 if orientation == "portrait" else 210) - 2 * margin
     return (f'<!doctype html><html lang="sv"><head><meta charset="utf-8"><title>{esc(title)}</title>'
+            '<link rel="icon" type="image/svg+xml" href="/favicon.svg">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<style>@page{{size:A4 {orientation};margin:{margin}mm}}{PRINT_CSS}'
             f'@media screen{{.sheet{{padding:{margin}mm}}}}</style></head><body>'

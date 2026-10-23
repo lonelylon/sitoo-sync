@@ -817,6 +817,14 @@ class UserTests(ReportBase):
         self.assertIn("inte kopplat till någon person", html)
         self.assertNotIn("Anna Andersson</button>", html)
 
+    def test_favicon_without_login(self):
+        c = Client(self.c.port)
+        status, _, body = c.req("GET", "/favicon.svg")
+        self.assertEqual(status, 200)
+        self.assertTrue(body.startswith("<svg"))
+        _, _, html = self.c.req("GET", "/")
+        self.assertIn('rel="icon"', html)
+
     def test_last_admin_and_self_protection(self):
         csrf = self.c.csrf("/anvandare")
         _, _, html = self.c.req("POST", "/anvandare/spara", {"csrf": csrf, "username": "admin", "name": "A"})

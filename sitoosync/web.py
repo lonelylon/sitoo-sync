@@ -79,6 +79,11 @@ def parse_multipart(content_type: str, body: bytes) -> dict:
     return form
 
 
+# Ikonen i webbläsarens flik: blå ruta med två synkpilar
+ICON_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3b6ff0"/><stop offset="1" stop-color="#1d46b8"/></linearGradient></defs><rect width="64" height="64" rx="14" fill="url(#g)"/><g fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"><path d="M47 25A16 16 0 0 0 19 21"/><path d="M17 39a16 16 0 0 0 28 4"/></g><g fill="#fff"><path d="M50 13v15H35z"/><path d="M14 51V36h15z"/></g></svg>')
+ICON_LINK = '<link rel="icon" type="image/svg+xml" href="/favicon.svg">'
+
+
 def esc(value) -> str:
     return html.escape("" if value is None else str(value), quote=True)
 
@@ -368,7 +373,7 @@ class RequestHandler(ReportPagesMixin, PrintPagesMixin, BaseHTTPRequestHandler):
         meta = f'<meta http-equiv="refresh" content="{refresh}">' if refresh else ""
         doc = (f'<!doctype html><html lang="sv"><head><meta charset="utf-8">'
                f'<meta name="viewport" content="width=device-width,initial-scale=1">{meta}'
-               f'<title>{esc(title)} · Sitoo Sync</title><style>{CSS}</style></head>'
+               f'<title>{esc(title)} · Sitoo Sync</title>{ICON_LINK}<style>{CSS}</style></head>'
                f'<body{body_cls}>{nav_html}<main><div class="{wrap}">{body}</div></main></body></html>')
         self._send(status, doc)
 
@@ -385,6 +390,8 @@ class RequestHandler(ReportPagesMixin, PrintPagesMixin, BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         path = urlparse(self.path).path
+        if path in ("/favicon.svg", "/favicon.ico"):
+            return self._send(200, ICON_SVG, "image/svg+xml")
         if path == "/health":
             return self._send(200, "ok", "text/plain; charset=utf-8")
         if not self.app.store.has_password():
