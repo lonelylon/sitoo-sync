@@ -253,6 +253,7 @@ class Verification:
     zrows: list[ZRow]
     deposits: Decimal
     warnings: list[str]
+    card_days: list = field(default_factory=list)   # worldline.DayCheck per dag, om Worldline-data finns
 
     @property
     def debit(self) -> Decimal:

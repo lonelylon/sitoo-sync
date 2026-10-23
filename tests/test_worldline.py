@@ -168,3 +168,24 @@ class CrossRefTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExplainTests(unittest.TestCase):
+    def test_explanations_and_table(self):
+        from sitoosync.reports import Verification
+        from sitoosync.web_reports import card_check_html, explain_day
+        wl = {date(2026, 9, 1): {"Belopp": "100", "Antal": 1}, date(2026, 9, 2): {"Belopp": "289", "Antal": 3},
+              date(2026, 9, 3): {"Belopp": "111", "Antal": 1}, date(2026, 9, 5): {"Belopp": "50", "Antal": 1}}
+        sitoo = {date(2026, 9, 1): Decimal("100"), date(2026, 9, 2): Decimal("200"), date(2026, 9, 3): Decimal("200"),
+                 date(2026, 9, 4): Decimal("70"), date(2026, 9, 5): Decimal("60")}
+        days = compare_days(date(2026, 9, 1), date(2026, 9, 5), sitoo, wl)
+        by = {d.day: d for d in days}
+        self.assertIn("tar ut 89,00 kr mot tor 2026-09-03", explain_day(by[date(2026, 9, 2)], by))
+        self.assertIn("Ingen Worldline-data", explain_day(by[date(2026, 9, 4)], by))
+        self.assertIn("Sitoo har 10,00 kr mer", explain_day(by[date(2026, 9, 5)], by))
+        v = Verification(lines=[], zrows=[], deposits=Decimal(0), warnings=[], card_days=days)
+        html = card_check_html(v)
+        self.assertIn("1 dag stämmer", html)
+        self.assertIn("3 dagar avviker", html)
+        self.assertIn("1 dag saknar Worldline-data", html)
+        self.assertNotIn("tis 2026-09-01", html)          # dagar som stämmer listas inte

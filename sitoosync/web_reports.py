@@ -6,7 +6,7 @@ import html
 import io
 import logging
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -34,6 +34,65 @@ FIXED_ACCOUNTS = [
 
 def n_days(n: int) -> str:
     return f"{n} dag" if n == 1 else f"{n} dagar"
+
+
+def explain_day(d, by_day: dict) -> str:
+    """Förklaring till en dag där Sitoo och Worldline inte stämmer."""
+    if d.status == "saknas":
+        return ("Ingen Worldline-data för dagen. Ladda upp utbetalningsrapporten som innehåller dagen "
+                "(oftast nästa dags utbetalning) eller månadsrapporten. Dagens kortavgifter är inte med.")
+    diff = d.diff
+    if diff < 0:
+        text = (f"Sitoo har {money(-diff)} kr mer i kortbetalningar än Worldline. Möjliga orsaker: köpet "
+                "registrerades som kort i kassan men nekades eller avbröts i terminalen, eller kortretur gjord "
+                "i kassan men inte i terminalen.")
+    else:
+        text = (f"Worldline har {money(diff)} kr mer än Sitoo. Möjliga orsaker: köp eller retur gjord direkt i "
+                "terminalen utan kassan, eller kortköp som registrerats som annat betalsätt i Sitoo.")
+    for delta in (-1, 1):
+        other = by_day.get(d.day + timedelta(days=delta))
+        if other and other.status == "avvikelse" and abs(other.diff + diff) < Decimal("0.01"):
+            text = (f"Skillnaden tar ut {money(abs(diff))} kr mot {day_fmt(other.day)}. Troligen samma köp på olika "
+                    "datum, till exempel en z-rapport som stängdes efter midnatt.")
+            break
+    return text
+
+
+def card_check_html(v, zrows_by_day: dict | None = None) -> str:
+    """Tabell över dagar där kortbetalningarna i Sitoo och Worldline inte stämmer (skärm och utskrift)."""
+    days = v.card_days or []
+    if not days:
+        return ""
+    zero = Decimal("0.00")
+    by_day = {d.day: d for d in days}
+    problems = [d for d in days if d.status in ("saknas", "avvikelse")]
+    sitoo = sum((d.sitoo for d in days), zero)
+    wl = sum((d.worldline or zero for d in days), zero)
+    ok = sum(1 for d in days if d.status == "ok")
+    unpaid = sum(d.unpaid for d in days)
+    summary = (f"Kortbetalningar enligt Sitoo {money(sitoo)} kr, enligt Worldline {money(wl)} kr, "
+               f"skillnad {money(wl - sitoo)} kr. {n_days(ok)} stämmer"
+               + (f", {n_days(sum(1 for d in problems if d.status == 'avvikelse'))} avviker" if problems else "")
+               + (f", {n_days(sum(1 for d in problems if d.status == 'saknas'))} saknar Worldline-data"
+                  if any(d.status == "saknas" for d in problems) else "")
+               + "." + (f" {unpaid} transaktioner saknar avgift eftersom utbetalningen inte är uppladdad." if unpaid else ""))
+    if not problems:
+        return f'<div class="cardcheck"><h2>Kontroll mot Worldline</h2><p class="ccsum">{esc(summary)} Alla dagar stämmer.</p></div>'
+    rows = []
+    for d in problems:
+        zs = (zrows_by_day or {}).get(d.day, [])
+        zref = ", ".join(f"{z.kassa} nr {z.zreport_id}" for z in zs)
+        rows.append(
+            f'<tr><td>{day_fmt(d.day)}</td><td>{esc(zref)}</td><td class="num">{money(d.sitoo, True)}</td>'
+            f'<td class="num">{money(d.worldline, True) if d.worldline is not None else "saknas"}</td>'
+            f'<td class="num"><b>{money(d.diff) if d.worldline is not None else ""}</b></td>'
+            f'<td class="num">{d.count or ""}</td><td class="expl">{esc(explain_day(d, by_day))}</td></tr>')
+    return (f'<div class="cardcheck"><h2>Kontroll mot Worldline</h2><p class="ccsum">{esc(summary)}</p>'
+            '<table class="compact cc"><thead><tr><th>Datum</th><th>Z-rapport</th><th class="num">Sitoo kort</th>'
+            '<th class="num">Worldline</th><th class="num">Diff</th><th class="num">Transakt.</th>'
+            f'<th>Förklaring</th></tr></thead><tbody>{"".join(rows)}</tbody></table>'
+            '<p class="ccnote">Diff = Worldline − Sitoo. Sitoo räknas per z-rapportens datum och Worldline per '
+            'transaktionsdatum.</p></div>')
 
 
 def note_html(note: str) -> str:
@@ -126,6 +185,9 @@ table.zt .gs{border-left:1px solid var(--line)}
 table.zt details.fix>summary{font-size:13px}
 table.zt details.fix[open]>summary{margin-bottom:4px}
 table.ver{max-width:1100px}
+.cardcheck .ccsum{color:var(--muted);font-size:14px;margin:4px 0 12px}
+table.cc td.expl{white-space:normal;min-width:320px;font-size:13.5px}
+.cardcheck .ccnote{color:var(--muted);font-size:12.5px;margin:10px 0 0}
 @media (min-width:1400px){.topgrid{display:grid;grid-template-columns:minmax(320px,400px) 1fr;gap:0 20px;align-items:start}}
 .toggle{border:0;background:none;padding:0;font:inherit;color:var(--accent);font-weight:600;cursor:pointer;
 display:inline-flex;align-items:center;gap:8px}
@@ -514,13 +576,12 @@ class ReportPagesMixin:
             deviating = [d for d in days if d.status == "avvikelse"]
             unpaid = sum(d.unpaid for d in days)
             if missing:
-                wl_warnings.append(f"Worldline-data saknas för {n_days(len(missing))} med kortförsäljning "
-                                   f"({', '.join(f'{d.day:%d/%m}' for d in missing[:8])}{' …' if len(missing) > 8 else ''}). "
-                                   "Avgifterna för dem är inte med.")
+                wl_warnings.append(f"Worldline-data saknas för {n_days(len(missing))} med kortförsäljning, "
+                                   "så avgifterna för dem är inte med. Se Kontroll mot Worldline.")
             if deviating:
                 diff = sum((d.diff for d in deviating), Decimal("0.00"))
-                wl_warnings.append(f"Sitoo och Worldline skiljer sig {n_days(len(deviating))}, totalt {money(diff)} kr. "
-                                   "Se Bokföring › Worldline.")
+                wl_warnings.append(f"Kortbetalningarna i Sitoo och Worldline skiljer sig {n_days(len(deviating))}, "
+                                   f"netto {money(diff)} kr. Se Kontroll mot Worldline.")
             if unpaid:
                 wl_warnings.append(f"{unpaid} korttransaktioner har ingen avgift ännu, eftersom utbetalningen inte är "
                                    "uppladdad. Ladda upp nästa månads- eller utbetalningsrapport.")
@@ -529,6 +590,8 @@ class ReportPagesMixin:
                                "Ladda upp rapporterna under Bokföring › Worldline.")
         v = build_verification(zrows, total_dep, accounts, pay_accounts, chart, card_fees=card_fees)
         v.warnings.extend(wl_warnings)
+        if wl:
+            v.card_days = days
         return v, deposits
 
     # ------------------------------------------------------------ Worldline
@@ -958,6 +1021,10 @@ table.chart td:nth-child(2){{width:100%}}
         balanced = ('<span class="pill ok">Balanserar</span>' if v.diff == 0 and v.lines else
                     f'<span class="pill warn">Diff {money(v.diff)}</span>' if v.lines else "")
 
+        zrows_by_day: dict = {}
+        for z in v.zrows:
+            zrows_by_day.setdefault(z.day, []).append(z)
+
         # ---- verifikation
         ver_rows = "".join(
             f'<tr><td>{esc(l.account)}</td><td>{esc(l.text)}{note_html(l.note)}</td>'
@@ -1073,6 +1140,7 @@ table.chart td:nth-child(2){{width:100%}}
 <div class="card"><h2>Verifikation {esc(label)} {balanced}</h2>
 <p class="lead small">Försäljning enligt z-rapporterna {start:%Y-%m-%d} – {end:%Y-%m-%d}. Moms räknas som netto × momssats; skillnaden mot z-rapportens moms läggs på öresavrundning.</p>
 {ver}</div></div>
+{('<div class="card" id="kontroll">' + card_check_html(v, zrows_by_day) + '</div>') if v.card_days else ""}
 <div class="card"><h2>Z-rapporter ({len(v.zrows)} st)</h2>
 <p class="lead small">Datum är dagen kassan öppnades; håll muspekaren över datumet för när den stängdes. Betalsätt med samma konto visas i samma kolumn.</p>{ztable}</div>
 {dep_card}
@@ -1183,6 +1251,8 @@ tr{break-inside:avoid}
 .dense .foot .sign{flex:1;margin:0;padding-top:1.6em;gap:6mm}
 .dense h2 .ok,.dense h2 .bad{font-size:.8em;margin-left:.6em}
 .warn-box{border:1px solid #e0a100;background:#fff7e0;padding:.4em .6em;margin-bottom:.8em;font-size:.9em}
+.cardcheck{margin:.6em 0 1em;break-inside:avoid}.cardcheck .ccsum{margin:.2em 0 .5em}
+.cardcheck td.expl{white-space:normal;width:45%}.cardcheck .ccnote{font-size:.85em;color:#555;margin:.3em 0 0}
 @media print{
   html,body{background:#fff}
   .toolbar{display:none}
@@ -1331,14 +1401,20 @@ class PrintPagesMixin:
                   + f"<td class='num'>{money(to_bank, True)}</td></tr>")
         ztable = (f'<h2>Z-rapporter</h2><table><thead><tr>{head}</tr></thead><tbody>{"".join(body_rows)}{totals}'
                   '</tbody></table>' if v.zrows else "<p>Inga z-rapporter i perioden.</p>")
-        warnings = "".join(f'<div class="warn-box">{esc(w)}</div>' for w in v.warnings)
+        # Varningar som tabellen Kontroll mot Worldline redan visar skrivs inte ut två gånger
+        warnings = "".join(f'<div class="warn-box">{esc(w)}</div>' for w in v.warnings
+                           if not (v.card_days and w.endswith("Se Kontroll mot Worldline.")))
+        zrows_by_day: dict = {}
+        for z in v.zrows:
+            zrows_by_day.setdefault(z.day, []).append(z)
+        cardcheck = card_check_html(v, zrows_by_day)
         legend = ('<div class="legend">* = datum rättat manuellt. Moms räknas som netto × momssats; '
                   'skillnaden mot z-rapporternas moms ingår i öresavrundningen.</div>')
         content = (f'<h1>Bokföringsunderlag {esc(label)}</h1>'
                    f'<div class="meta">{start:%Y-%m-%d} – {end:%Y-%m-%d} · {len(v.zrows)} z-rapporter · '
                    f'Utskriven {datetime.now():%Y-%m-%d %H:%M}</div>'
                    f'{warnings}<div class="split"><div style="flex:1.6"><h2>Verifikation {status}</h2>{verification}</div>'
-                   f'<div>{side}</div></div>{ztable}'
+                   f'<div>{side}</div></div>{cardcheck}{ztable}'
                    f'<div class="foot">{legend}<div class="sign"><div>Bokförd av</div><div>Datum</div>'
                    '<div>Verifikationsnummer</div></div></div>')
         name = month or f"{start:%Y-%m-%d}–{end:%Y-%m-%d}"
