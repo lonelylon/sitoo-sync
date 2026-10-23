@@ -118,6 +118,7 @@ body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-ap
 a{color:var(--accent)}
 header{background:var(--card);border-bottom:1px solid var(--line)}
 .wrap{max-width:1080px;margin:0 auto;padding:0 20px}
+.wrap.wide{max-width:1860px}
 header .wrap{display:flex;align-items:center;gap:24px;height:58px}
 .brand{font-weight:650;letter-spacing:-.01em;white-space:nowrap}
 nav{display:flex;gap:4px;flex:1;overflow-x:auto}
@@ -299,7 +300,8 @@ class RequestHandler(ReportPagesMixin, PrintPagesMixin, BaseHTTPRequestHandler):
         self._send(status, json.dumps(data, ensure_ascii=False), "application/json; charset=utf-8")
 
     def _page(self, title: str, body: str, active: str = "", nav: bool = True, refresh: int | None = None,
-              status: int = 200) -> None:
+              status: int = 200, wide: bool = False) -> None:
+        wrap = "wrap wide" if wide else "wrap"
         links = [("/", "Översikt", "home"), ("/tid", "Tidrapport", "time"), ("/bokforing", "Bokföring", "accounting"),
                  ("/installningar", "Inställningar", "settings"), ("/logg", "Logg", "log")]
         nav_html = ""
@@ -307,7 +309,7 @@ class RequestHandler(ReportPagesMixin, PrintPagesMixin, BaseHTTPRequestHandler):
             items = "".join(f'<a href="{href}" class="{"on" if key == active else ""}">{label}</a>'
                             for href, label, key in links)
             csrf = self._session_csrf()
-            nav_html = (f'<header><div class="wrap"><div class="brand">Sitoo Sync</div><nav>{items}</nav>'
+            nav_html = (f'<header><div class="{wrap}"><div class="brand">Sitoo Sync</div><nav>{items}</nav>'
                         f'<form class="inline" method="post" action="/loggaut">'
                         f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
                         f'<button class="sm" type="submit">Logga ut</button></form></div></header>')
@@ -315,7 +317,7 @@ class RequestHandler(ReportPagesMixin, PrintPagesMixin, BaseHTTPRequestHandler):
         doc = (f'<!doctype html><html lang="sv"><head><meta charset="utf-8">'
                f'<meta name="viewport" content="width=device-width,initial-scale=1">{meta}'
                f'<title>{esc(title)} · Sitoo Sync</title><style>{CSS}</style></head>'
-               f'<body>{nav_html}<main><div class="wrap">{body}</div></main></body></html>')
+               f'<body>{nav_html}<main><div class="{wrap}">{body}</div></main></body></html>')
         self._send(status, doc)
 
     def _session_csrf(self) -> str:
