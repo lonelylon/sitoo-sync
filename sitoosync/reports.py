@@ -169,6 +169,8 @@ DEFAULT_ACCOUNTS = {
     "rounding": "3740",
     "bank": "1938",
     "cash": "1911",
+    "card": "1937",
+    "card_fee": "6570",
 }
 DEFAULT_PAYMENT_ACCOUNTS = "Kort=1937; Swish=1936; Kontant=KONTANT"
 CASH = "KONTANT"   # betalsätt som delas på bankningar och kassa
@@ -350,7 +352,8 @@ def payment_columns(names: list[str], payment_accounts: dict[str, str], chart: d
 
 
 def build_verification(zrows: list[ZRow], deposits: Decimal, accounts: dict[str, str],
-                       payment_accounts: dict[str, str], chart: dict[str, str] | None = None) -> Verification:
+                       payment_accounts: dict[str, str], chart: dict[str, str] | None = None,
+                       card_fees: Decimal = ZERO) -> Verification:
     """Konteringsförslag som i Excel-bladet 'Försäljning'.
 
     Kredit: netto per momssats och moms (räknad som netto x sats, som i Excel).
@@ -358,6 +361,8 @@ def build_verification(zrows: list[ZRow], deposits: Decimal, accounts: dict[str,
     öresavrundningen på öresavrundningskontot.
     Debet: betalsätten, en rad per konto. Betalsätt med samma konto summeras.
     Kontanter delas på bank (bankningar) och kassa (resten).
+    card_fees (positivt belopp) är Worldlines avgifter: de debiteras avgiftskontot och
+    dras från kortkontot, så att kortkontot visar det som betalas ut.
     """
     chart = chart or {}
     payment_accounts = {k.casefold(): v for k, v in payment_accounts.items()}
@@ -392,6 +397,14 @@ def build_verification(zrows: list[ZRow], deposits: Decimal, accounts: dict[str,
         note = ", ".join(names) if ", ".join(names) != label else ""
         lines.append(Line(account, f"Försäljning – {label}", debit=amount if amount > 0 else ZERO,
                           credit=-amount if amount < 0 else ZERO, note=note))
+    if card_fees:
+        card_line = next((l for l in lines if l.account == a["card"] and l.debit >= card_fees), None)
+        if card_line:
+            card_line.debit -= card_fees
+            card_line.note = ", ".join(x for x in (card_line.note, "efter avgift") if x)
+        else:
+            lines.append(Line(a["card"], "Kortavgifter Worldline – avdrag", credit=card_fees))
+        lines.append(Line(a["card_fee"], "Kortavgifter Worldline", debit=card_fees))
     if deposits:
         lines.append(Line(a["bank"], "Bankningar – kontant", debit=deposits))
     rest = cash_total - deposits
@@ -536,6 +549,73 @@ class Reports:
         self.db.execute("UPDATE sitoo.TimeStampAdd SET Namn = %s WHERE Id = %s", (to_name, stamp_id))
 
     # ------------------------------------------------------------ bokföring
+    # ------------------------------------------------------------ Worldline
+    @staticmethod
+    def _merchant_filter(merchants: list[str], col: str = "Merchant") -> tuple[str, tuple]:
+        if not merchants:
+            return "", ()
+        return f" AND {col} IN ({', '.join(['%s'] * len(merchants))})", tuple(merchants)
+
+    def wl_file_by_hash(self, digest: str) -> dict | None:
+        rows = self.db.query("SELECT TOP 1 * FROM sitoo.WorldlineFiles WHERE FileHash = %s ORDER BY Id DESC", (digest,))
+        return rows[0] if rows else None
+
+    def wl_save(self, filename: str, report, digest: str) -> tuple[int, int]:
+        """Sparar rapporten. Returnerar (nya transaktioner, transaktioner i filen)."""
+        import json as _json
+        rows = self.db.query(
+            "INSERT sitoo.WorldlineFiles (FileName, ReportType, Period, Reference, FileHash, Transactions, NewRows) "
+            "OUTPUT INSERTED.Id VALUES (%s, %s, %s, %s, %s, %s, 0)",
+            (filename[:260], report.kind, report.period, report.reference, digest, len(report.transactions)))
+        file_id = int(rows[0]["Id"])
+        try:
+            res = self.db.query("EXEC sitoo.MergeWorldline %s, %s",
+                                (file_id, _json.dumps(report.as_json_dict(), ensure_ascii=False)))
+        except Exception:
+            # Ta bort filraden så att samma fil kan laddas upp igen
+            self.db.execute("DELETE FROM sitoo.WorldlineFiles WHERE Id = %s", (file_id,))
+            raise
+        new = int(res[0]["NewRows"]) if res else 0
+        return new, len(report.transactions)
+
+    def wl_files(self, limit: int = 100) -> list[dict]:
+        return self._q(f"SELECT TOP {int(limit)} Id, FileName, ReportType, Period, Reference, Transactions, NewRows, "
+                       "UploadedUtc FROM sitoo.WorldlineFiles ORDER BY Id DESC", (), "worldline-filer")
+
+    def wl_merchants(self) -> list[str]:
+        rows = self._q("SELECT DISTINCT Merchant FROM sitoo.WorldlineTransactions WHERE Merchant IS NOT NULL", (),
+                       "worldline-säljställen")
+        return sorted((r["Merchant"] for r in rows), key=str.casefold)
+
+    def wl_daily(self, start: date, end: date, merchants: list[str]) -> dict[date, dict]:
+        where, params = self._merchant_filter(merchants)
+        rows = self._q(
+            "SELECT TransactionDate AS Dag, SUM(Amount) AS Belopp, COUNT(*) AS Antal, SUM(COALESCE(Fee, 0)) AS Avgift, "
+            "SUM(CASE WHEN Fee IS NULL THEN 1 ELSE 0 END) AS UtanAvgift, "
+            "STRING_AGG(CAST(PayoutRef AS NVARCHAR(MAX)), ',') AS Utbetalningar "
+            "FROM sitoo.WorldlineTransactions WHERE TransactionDate >= %s AND TransactionDate <= %s "
+            f"AND (Status IS NULL OR Status = 'Cleared'){where} GROUP BY TransactionDate",
+            (start, end) + params, "worldline per dag")
+        return {r["Dag"]: r for r in rows}
+
+    def wl_other_costs(self, start: date, end: date) -> Decimal:
+        """Justeringar utöver transaktionsavgifterna (t.ex. månadsavgifter), som positiv kostnad."""
+        rows = self._q("SELECT SUM(Belopp) AS Belopp FROM sitoo.WorldlineAdjustments "
+                       "WHERE Datum >= %s AND Datum <= %s AND LOWER(Detaljer) <> 'transaktionsavgifter'",
+                       (start, end), "worldline justeringar")
+        total = Decimal(rows[0]["Belopp"] or 0) if rows else Decimal(0)
+        return (-total).quantize(Decimal("0.01"))
+
+    def wl_payouts(self, start: date, end: date, merchants: list[str]) -> list[dict]:
+        where, params = self._merchant_filter(merchants)
+        return self._q("SELECT * FROM sitoo.WorldlinePayouts WHERE PayoutDate >= %s AND PayoutDate <= %s"
+                       f"{where} ORDER BY PayoutDate", (start, end) + params, "worldline utbetalningar")
+
+    def wl_range(self) -> tuple[date | None, date | None]:
+        rows = self._q("SELECT MIN(TransactionDate) AS Fran, MAX(TransactionDate) AS Till FROM sitoo.WorldlineTransactions",
+                       (), "worldline period")
+        return (rows[0]["Fran"], rows[0]["Till"]) if rows else (None, None)
+
     def payment_names(self) -> list[str]:
         """Alla betalsätt som förekommer i z-rapporterna."""
         rows = self._q("SELECT DISTINCT LTRIM(RTRIM(Name)) AS Name FROM sitoo.ZReportPayments "

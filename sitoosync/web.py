@@ -56,6 +56,29 @@ SECTIONS = [
 ]
 
 
+def parse_multipart(content_type: str, body: bytes) -> dict:
+    """Formulär med filer: vanliga fält som str, filerna i form['_files'] som (fält, filnamn, innehåll)."""
+    from email.parser import BytesParser
+    from email.policy import HTTP
+    msg = BytesParser(policy=HTTP).parsebytes(
+        b"Content-Type: " + content_type.encode("latin-1", "replace") + b"\r\nMIME-Version: 1.0\r\n\r\n" + body)
+    form: dict = {"_files": []}
+    if not msg.is_multipart():
+        return form
+    for part in msg.iter_parts():
+        name = part.get_param("name", header="content-disposition")
+        if not name:
+            continue
+        filename = part.get_filename()
+        payload = part.get_payload(decode=True) or b""
+        if filename is not None:
+            if filename and payload:
+                form["_files"].append((name, filename.replace("\\", "/").rsplit("/", 1)[-1], payload))
+        else:
+            form[name] = payload.decode(part.get_content_charset() or "utf-8", "replace")
+    return form
+
+
 def esc(value) -> str:
     return html.escape("" if value is None else str(value), quote=True)
 
@@ -265,8 +288,16 @@ class RequestHandler(ReportPagesMixin, PrintPagesMixin, BaseHTTPRequestHandler):
             return None
         return jar["sid"].value if "sid" in jar else None
 
+    MAX_UPLOAD = 60 * 1024 * 1024
+
     def _form(self) -> dict:
         length = int(self.headers.get("Content-Length") or 0)
+        ctype = self.headers.get("Content-Type") or ""
+        if ctype.lower().startswith("multipart/form-data"):
+            if length > self.MAX_UPLOAD:
+                self.rfile.read(length)
+                return {"_too_large": "1"}
+            return parse_multipart(ctype, self.rfile.read(length) if length else b"")
         if length > 1_000_000:
             return {}
         body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
@@ -345,7 +376,8 @@ class RequestHandler(ReportPagesMixin, PrintPagesMixin, BaseHTTPRequestHandler):
                   "/tid": self.page_time, "/tid.csv": self.csv_time, "/tid/utskrift": self.print_time,
                   "/bokforing": self.page_accounting, "/bokforing.csv": self.csv_accounting,
                   "/bokforing/utskrift": self.print_accounting,
-                  "/bokforing/konton": self.page_accounts}
+                  "/bokforing/konton": self.page_accounts,
+                  "/bokforing/worldline": self.page_worldline}
         handler = routes.get(path)
         if handler is None:
             return self._page("Hittades inte", "<h1>Sidan finns inte</h1>", status=404)

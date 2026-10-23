@@ -9,6 +9,9 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from urllib.parse import parse_qs, urlencode, urlparse
 
+from .worldline import (
+    WorldlineError, compare_days, file_hash, group_months, parse_report, sitoo_card_by_day,
+)
 from .reports import (
     CASH, DEFAULT_ACCOUNTS, Reports, build_verification, format_chart, format_payment_map, month_period,
     parse_chart, parse_payment_accounts, parse_payment_map, payment_columns, payroll_period,
@@ -24,7 +27,12 @@ FIXED_ACCOUNTS = [
     ("net_6", "Försäljning 6 % moms"), ("vat_6", "Utgående moms 6 %"),
     ("net_0", "Försäljning momsfri"), ("rounding", "Öresavrundning"),
     ("bank", "Kontanter insatta på banken"), ("cash", "Kontanter kvar i kassan"),
+    ("card", "Kortinbetalningar (Worldlines avgift dras härifrån)"), ("card_fee", "Kortavgifter Worldline"),
 ]
+
+def n_days(n: int) -> str:
+    return f"{n} dag" if n == 1 else f"{n} dagar"
+
 
 def note_html(note: str) -> str:
     return f' <span class="muted small">({esc(note)})</span>' if note else ""
@@ -457,13 +465,248 @@ class ReportPagesMixin:
         accounts = {k: s.get(f"acc_{k}") or v for k, v in DEFAULT_ACCOUNTS.items()}
         return accounts, parse_payment_accounts(s.get("acc_payments") or "")
 
+    def _wl_merchants(self) -> list[str]:
+        return [m.strip() for m in (self._settings().get("wl_merchants") or "").split(";") if m.strip()]
+
     def _verification(self, reports: Reports, start: date, end: date):
         zrows = reports.zrows(start, end)
         deposits = reports.deposits(start, end)
         total_dep = sum((Decimal(d["Belopp"]) for d in deposits), Decimal("0.00"))
         accounts, pay_accounts = self._accounts()
         chart = parse_chart(self._settings().get("acc_chart") or "")
-        return build_verification(zrows, total_dep, accounts, pay_accounts, chart), deposits
+
+        # Worldline: avgifter och kontroll mot Sitoos kortbetalningar
+        card_fees = Decimal("0.00")
+        wl_warnings: list[str] = []
+        try:
+            wl = reports.wl_daily(start, end, self._wl_merchants())
+        except Exception as err:  # noqa: BLE001
+            log.warning("Kunde inte läsa Worldline-data: %s", err)
+            wl = {}
+        if wl:
+            days = compare_days(start, end, sitoo_card_by_day(zrows, pay_accounts, accounts["card"], accounts["cash"]), wl)
+            card_fees = -sum((d.fee for d in days), Decimal("0.00")) + reports.wl_other_costs(start, end)
+            missing = [d for d in days if d.status == "saknas"]
+            deviating = [d for d in days if d.status == "avvikelse"]
+            unpaid = sum(d.unpaid for d in days)
+            if missing:
+                wl_warnings.append(f"Worldline-data saknas för {n_days(len(missing))} med kortförsäljning "
+                                   f"({', '.join(f'{d.day:%d/%m}' for d in missing[:8])}{' …' if len(missing) > 8 else ''}). "
+                                   "Avgifterna för dem är inte med.")
+            if deviating:
+                diff = sum((d.diff for d in deviating), Decimal("0.00"))
+                wl_warnings.append(f"Sitoo och Worldline skiljer sig {n_days(len(deviating))}, totalt {money(diff)} kr. "
+                                   "Se Bokföring › Worldline.")
+            if unpaid:
+                wl_warnings.append(f"{unpaid} korttransaktioner har ingen avgift ännu, eftersom utbetalningen inte är "
+                                   "uppladdad. Ladda upp nästa månads- eller utbetalningsrapport.")
+        elif any(z.payments for z in zrows):
+            wl_warnings.append("Ingen Worldline-data för perioden, så kortavgifterna (6570) är inte med. "
+                               "Ladda upp rapporterna under Bokföring › Worldline.")
+        v = build_verification(zrows, total_dep, accounts, pay_accounts, chart, card_fees=card_fees)
+        v.warnings.extend(wl_warnings)
+        return v, deposits
+
+    # ------------------------------------------------------------ Worldline
+    WL_DAY_STATUS = {"ok": ("ok", "Stämmer"), "saknas": ("warn", "Saknas"), "avvikelse": ("warn", "Avvikelse"),
+                     "ingen": ("", "")}
+    WL_MONTH_STATUS = {"ok": ("ok", "Komplett"), "saknas": ("warn", "Ej uppladdad"),
+                       "avvikelse": ("warn", "Avvikelse"), "utan_avgift": ("warn", "Avgifter saknas"),
+                       "ingen": ("", "Ingen försäljning")}
+
+    def page_worldline(self) -> None:
+        reports = self._reports()
+        if reports is None:
+            return self._not_configured("Worldline", "accounting")
+        q = self._q()
+        today = date.today()
+        # tolv månader bakåt
+        y, m = today.year, today.month - 11
+        while m <= 0:
+            y, m = y - 1, m + 12
+        start = date(y, m, 1)
+        accounts, pay_accounts = self._accounts()
+        merchants = self._wl_merchants()
+        try:
+            zrows = reports.zrows(start, today)
+            wl = reports.wl_daily(start, today, merchants)
+            files = reports.wl_files(30)
+            all_merchants = reports.wl_merchants()
+            sel = q.get("manad") or ""
+            months = group_months(compare_days(
+                start, today, sitoo_card_by_day(zrows, pay_accounts, accounts["card"], accounts["cash"]), wl))
+            if not sel:
+                sel = next((mc.month for mc in months if mc.status not in ("ok", "ingen")), f"{today:%Y-%m}")
+            sel_month = next((mc for mc in months if mc.month == sel), None)
+            payouts = []
+            if sel_month:
+                payouts = reports.wl_payouts(sel_month.days[0].day, sel_month.days[-1].day, merchants)
+        except Exception as err:  # noqa: BLE001
+            return self._db_error("Worldline", "accounting", err)
+        finally:
+            reports.db.close()
+        csrf = self._csrf_field()
+
+        def pill(kind_text):
+            kind, text = kind_text
+            return f'<span class="pill {kind}">{esc(text)}</span>' if text else ""
+
+        msgs = ""
+        if q.get("resultat"):
+            lines = q["resultat"].split("\n")
+            cls = "a-err" if any(l.startswith("Fel") for l in lines) else "a-ok"
+            msgs += f'<div class="alert {cls}">' + "<br>".join(esc(l) for l in lines) + "</div>"
+        if q.get("sparat"):
+            msgs += '<div class="alert a-ok">Sparat.</div>'
+
+        upload = f"""<div class="card"><h2>Ladda upp rapporter</h2>
+<p class="lead small">Ladda ner rapporterna i Excel-format från Worldlines Merchant Portal (reports.bambora.com) och ladda upp dem här.
+Både <b>månadsrapporter</b> och <b>utbetalningsrapporter</b> fungerar, och flera filer kan väljas samtidigt.
+Samma transaktion sparas bara en gång, så det gör inget om rapporterna överlappar.</p>
+<form method="post" action="/bokforing/worldline/ladda-upp" enctype="multipart/form-data" class="filters">{csrf}
+<div style="flex:1;min-width:260px"><label for="wl_files">Excel-filer (.xlsx)</label>
+<input id="wl_files" type="file" name="filer" accept=".xlsx" multiple required></div>
+<div><button class="primary" type="submit">Ladda upp</button></div></form></div>"""
+
+        # ---- månader
+        mrows = []
+        for mc in months:
+            st = mc.status
+            label = self.WL_MONTH_STATUS.get(st, ("warn", ""))
+            if st == "ofullstandig":
+                label = ("warn", f"Saknar {n_days(len(mc.missing))}")
+            dev = f"{len(mc.deviations)}" if mc.deviations else ""
+            cls = ' class="sel"' if mc.month == sel else ""
+            mrows.append(
+                f'<tr{cls}><td><a href="/bokforing/worldline?manad={mc.month}#dagar">{mc.month}</a></td>'
+                f'<td class="num">{money(mc.sitoo, True)}</td><td class="num">{money(mc.worldline, True)}</td>'
+                f'<td class="num">{money(mc.diff, True)}</td><td class="num">{money(-mc.fee, True)}</td>'
+                f'<td class="num">{len(mc.missing) or ""}</td><td class="num">{dev}</td>'
+                f'<td class="num">{mc.unpaid or ""}</td><td>{pill(label)}</td></tr>')
+        month_card = f"""<div class="card"><h2>Täckning per månad</h2>
+<p class="lead small">Kortbetalningar enligt Sitoos z-rapporter jämfört med Worldlines transaktioner, per transaktionsdatum.
+<i>Saknas</i> betyder dagar med kortförsäljning i Sitoo men inga transaktioner hos Worldline. <i>Utan avgift</i> är transaktioner
+som ännu inte finns i någon uppladdad utbetalning.</p>
+<div class="scroll"><table class="compact wl"><thead><tr><th>Månad</th><th class="num">Sitoo kort</th>
+<th class="num">Worldline</th><th class="num">Diff</th><th class="num">Avgifter</th><th class="num">Saknade dagar</th>
+<th class="num">Avvikelser</th><th class="num">Utan avgift</th><th>Status</th></tr></thead>
+<tbody>{"".join(mrows)}</tbody></table></div></div>"""
+
+        # ---- dagar i vald månad
+        day_card = ""
+        if sel_month:
+            drows = []
+            for d in sel_month.days:
+                if d.status == "ingen" and not d.count:
+                    continue
+                extra = f' <span class="pill warn">{d.unpaid} utan avgift</span>' if d.unpaid else ""
+                drows.append(
+                    f'<tr class="{"warn" if d.status in ("saknas", "avvikelse") else ""}"><td>{day_fmt(d.day)}</td>'
+                    f'<td class="num">{money(d.sitoo, True)}</td><td class="num">{money(d.worldline, True)}</td>'
+                    f'<td class="num">{money(d.diff, True) if d.worldline is not None else ""}</td>'
+                    f'<td class="num">{d.count or ""}</td><td class="num">{money(-d.fee, True)}</td>'
+                    f'<td class="small">{esc(", ".join(d.payouts))}</td><td>{pill(self.WL_DAY_STATUS[d.status])}{extra}</td></tr>')
+            tot = sel_month
+            drows.append(f'<tr class="total"><td>Summa</td><td class="num">{money(tot.sitoo)}</td>'
+                         f'<td class="num">{money(tot.worldline)}</td><td class="num">{money(tot.diff)}</td>'
+                         f'<td class="num">{sum(d.count for d in tot.days)}</td><td class="num">{money(-tot.fee)}</td>'
+                         '<td></td><td></td></tr>')
+            prow = "".join(
+                f'<tr><td>{p["PayoutDate"]:%Y-%m-%d}</td><td>{esc(p["PayoutRef"])}</td><td>{esc(p.get("Merchant"))}</td>'
+                f'<td class="num">{p.get("Transactions") or ""}</td><td class="num">{money(p["Turnover"])}</td>'
+                f'<td class="num">{money(p["Fees"], True)}</td><td class="num">{money(p["Adjustments"], True)}</td>'
+                f'<td class="num">{money(p["Chargebacks"], True)}</td><td class="num">{money(p["Amount"])}</td></tr>'
+                for p in payouts)
+            pay_table = ("<p class='muted'>Inga uppladdade utbetalningar i månaden.</p>" if not payouts else
+                         '<div class="scroll"><table class="compact"><thead><tr><th>Datum</th><th>Referens</th>'
+                         '<th>Säljställe</th><th class="num">Transaktioner</th><th class="num">Omsättning</th>'
+                         '<th class="num">Avgifter</th><th class="num">Justeringar</th><th class="num">Reklamationer</th>'
+                         f'<th class="num">Utbetalt</th></tr></thead><tbody>{prow}</tbody></table></div>')
+            day_card = f"""<div class="topgrid2"><div class="card" id="dagar"><h2>Dagar {esc(sel)}</h2>
+<p class="lead small">Sitoo räknas per z-rapportens datum, Worldline per transaktionsdatum.</p>
+<div class="scroll"><table class="compact wl"><thead><tr><th>Datum</th><th class="num">Sitoo kort</th>
+<th class="num">Worldline</th><th class="num">Diff</th><th class="num">Transaktioner</th><th class="num">Avgift</th>
+<th>Utbetalning</th><th>Status</th></tr></thead><tbody>{"".join(drows)}</tbody></table></div></div>
+<div class="card"><h2>Utbetalningar {esc(sel)}</h2>{pay_table}</div></div>"""
+
+        # ---- säljställen
+        merch_html = ""
+        if all_merchants:
+            boxes = "".join(
+                f'<label class="check"><input type="checkbox" name="m_{i}" value="{esc(mn)}" '
+                f'{"checked" if not merchants or mn in merchants else ""}> {esc(mn)}</label>'
+                for i, mn in enumerate(all_merchants))
+            merch_html = f"""<div class="card"><h2>Säljställen</h2>
+<p class="lead small">Säljställena hos Worldline som jämförs med Sitoo och vars avgifter bokförs.</p>
+<form method="post" action="/bokforing/worldline/saljstallen">{csrf}<div class="row">{boxes}</div>
+<div class="row" style="margin-top:12px"><button type="submit">Spara</button></div></form></div>"""
+
+        frows = "".join(
+            f'<tr><td>{f["UploadedUtc"]:%Y-%m-%d %H:%M}</td><td>{esc(f["FileName"])}</td>'
+            f'<td>{"Månadsrapport" if f["ReportType"] == "manad" else "Utbetalningsrapport"}</td>'
+            f'<td>{esc(f.get("Period"))}</td><td class="num">{f["Transactions"]}</td><td class="num">{f["NewRows"]}</td></tr>'
+            for f in files)
+        files_card = ("" if not files else
+                      '<div class="card"><h2>Uppladdade filer</h2><div class="scroll"><table class="compact"><thead><tr>'
+                      '<th>Uppladdad (UTC)</th><th>Fil</th><th>Typ</th><th>Period</th><th class="num">Transaktioner</th>'
+                      f'<th class="num">Nya</th></tr></thead><tbody>{frows}</tbody></table></div></div>')
+
+        body = f"""<h1>Worldline</h1>
+<p class="lead"><a href="/bokforing">← Tillbaka till Bokföring</a></p>{msgs}
+<div class="topgrid"><div>{upload}{merch_html}</div>{month_card}</div>
+{day_card}{files_card}
+<style>{REPORT_CSS}
+table.wl tr.sel td{{background:var(--bg)}} table.wl tr.sel td:first-child{{font-weight:650}}
+@media (min-width:1400px){{.topgrid2{{display:grid;grid-template-columns:1fr 1fr;gap:0 20px;align-items:start}}}}
+</style>"""
+        self._page("Worldline", body, active="accounting", wide=True)
+
+    def post_worldline(self, path: str, form: dict) -> None:
+        if path == "/bokforing/worldline/saljstallen":
+            chosen = [v for k, v in form.items() if k.startswith("m_") and v]
+            reports = self._reports()
+            all_m = []
+            if reports is not None:
+                try:
+                    all_m = reports.wl_merchants()
+                finally:
+                    reports.db.close()
+            value = "" if not chosen or set(chosen) >= set(all_m) else "; ".join(c.replace(";", ",") for c in chosen)
+            self.app.store.update({"wl_merchants": value}, partial=True)
+            return self._redirect("/bokforing/worldline?sparat=1")
+        # ladda upp
+        if form.get("_too_large"):
+            return self._redirect("/bokforing/worldline?" + urlencode({"resultat": "Fel: filerna är för stora (max 60 MB)."}))
+        files = form.get("_files") or []
+        reports = self._reports()
+        if reports is None:
+            return self._redirect("/bokforing/worldline")
+        lines = []
+        try:
+            for _field, name, data in files:
+                try:
+                    digest = file_hash(data)
+                    old = reports.wl_file_by_hash(digest)
+                    if old:
+                        lines.append(f"{name}: redan uppladdad {old['UploadedUtc']:%Y-%m-%d}, hoppades över.")
+                        continue
+                    rep = parse_report(data)
+                    new, total = reports.wl_save(name, rep, digest)
+                    first, last = rep.dates
+                    span = f", transaktioner {first:%Y-%m-%d} – {last:%Y-%m-%d}" if first else ""
+                    lines.append(f"{name}: {rep.label.lower()} {rep.period or ''} – {total} transaktioner, "
+                                 f"{new} nya, {len(rep.payouts)} utbetalningar{span}.")
+                    log.info("Worldline-rapport inläst: %s (%s, %s transaktioner, %s nya)", name, rep.kind, total, new)
+                except WorldlineError as err:
+                    lines.append(f"Fel i {name}: {err}")
+                except Exception as err:  # noqa: BLE001
+                    log.exception("Kunde inte läsa in Worldline-rapport %s", name)
+                    lines.append(f"Fel i {name}: {err}")
+        finally:
+            reports.db.close()
+        if not lines:
+            lines = ["Fel: ingen fil valdes."]
+        self._redirect("/bokforing/worldline?" + urlencode({"resultat": "\n".join(lines)[:1800]}))
 
     # ------------------------------------------------------------ kontoinställningar
     def page_accounts(self) -> None:
@@ -739,6 +982,7 @@ table.chart td:nth-child(2){{width:100%}}
 <div><button type="submit">Visa</button></div></form></details>
 <div class="row" style="margin-top:12px"><a class="btn" href="/bokforing.csv?{esc(qs)}">Exportera (CSV)</a>
 <a class="btn" href="/bokforing/utskrift?{esc(qs)}" target="_blank" rel="noopener">Utskrift</a>
+<a class="btn" href="/bokforing/worldline">Worldline</a>
 <a class="btn" href="/bokforing/konton">Konton</a></div></div>
 {warn_html}</div>
 <div class="card"><h2>Verifikation {esc(label)} {balanced}</h2>
@@ -779,6 +1023,8 @@ table.chart td:nth-child(2){{width:100%}}
     def post_accounting(self, path: str, form: dict) -> None:
         if path in ("/bokforing/konton", "/bokforing/kontoplan"):
             return self.post_accounts(path, form)
+        if path.startswith("/bokforing/worldline/"):
+            return self.post_worldline(path, form)
         back = self._back(form, "/bokforing")
         reports = self._reports()
         if reports is None:

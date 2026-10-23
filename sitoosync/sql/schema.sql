@@ -1401,3 +1401,189 @@ SELECT
 FROM sitoo.ZReports z
 LEFT JOIN sitoo.ZReportDateFix f ON f.RegisterId = z.RegisterId AND f.ZReportId = z.ZReportId;
 GO
+
+------------------------------------------------------------------------------
+-- Worldline (Bambora): uppladdade månads- och utbetalningsrapporter
+------------------------------------------------------------------------------
+IF OBJECT_ID(N'sitoo.WorldlineFiles', N'U') IS NULL
+CREATE TABLE sitoo.WorldlineFiles (
+    Id            INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_WorldlineFiles PRIMARY KEY,
+    FileName      NVARCHAR(260) NOT NULL,
+    ReportType    NVARCHAR(20)  NOT NULL,      -- manad eller utbetalning
+    Period        NVARCHAR(40)  NULL,
+    Reference     NVARCHAR(40)  NULL,
+    FileHash      CHAR(64)      NOT NULL,
+    Transactions  INT           NOT NULL,
+    NewRows       INT           NOT NULL,
+    UploadedUtc   DATETIME2(0)  NOT NULL CONSTRAINT DF_WorldlineFiles_Uploaded DEFAULT SYSUTCDATETIME()
+);
+GO
+IF OBJECT_ID(N'sitoo.WorldlineTransactions', N'U') IS NULL
+CREATE TABLE sitoo.WorldlineTransactions (
+    TransactionRef   NVARCHAR(40)  NOT NULL,
+    Typ              NVARCHAR(30)  NOT NULL,   -- Sale, Refund ...
+    TransactionDate  DATE          NOT NULL,
+    TransactionTime  TIME(0)       NULL,
+    CustomerNumber   NVARCHAR(20)  NULL,
+    Merchant         NVARCHAR(100) NULL,       -- säljställe
+    PaymentMethod    NVARCHAR(40)  NULL,
+    CardType         NVARCHAR(60)  NULL,
+    IssuerCountry    NVARCHAR(60)  NULL,
+    Domain           NVARCHAR(30)  NULL,
+    TerminalId       NVARCHAR(40)  NULL,
+    Status           NVARCHAR(30)  NULL,
+    Currency         NVARCHAR(3)   NULL,
+    Amount           DECIMAL(19,2) NOT NULL,   -- belopp, returer negativa
+    Tip              DECIMAL(19,2) NULL,
+    Fee              DECIMAL(19,2) NULL,       -- negativ; NULL tills utbetalningen är uppladdad
+    NetAmount        DECIMAL(19,2) NULL,
+    PayoutRef        NVARCHAR(40)  NULL,
+    PayoutDate       DATE          NULL,
+    FileId           INT           NULL,
+    UpdatedUtc       DATETIME2(0)  NOT NULL CONSTRAINT DF_WorldlineTransactions_Updated DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT PK_WorldlineTransactions PRIMARY KEY (TransactionRef, Typ)
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_WorldlineTransactions_Date')
+    CREATE INDEX IX_WorldlineTransactions_Date ON sitoo.WorldlineTransactions (TransactionDate)
+        INCLUDE (Amount, Fee, Merchant, Status, PayoutRef);
+GO
+IF OBJECT_ID(N'sitoo.WorldlinePayouts', N'U') IS NULL
+CREATE TABLE sitoo.WorldlinePayouts (
+    PayoutRef       NVARCHAR(40)  NOT NULL CONSTRAINT PK_WorldlinePayouts PRIMARY KEY,
+    PayoutDate      DATE          NOT NULL,
+    CustomerNumber  NVARCHAR(20)  NULL,
+    Merchant        NVARCHAR(100) NULL,
+    Account         NVARCHAR(40)  NULL,
+    Transactions    INT           NULL,
+    Currency        NVARCHAR(3)   NULL,
+    Turnover        DECIMAL(19,2) NOT NULL,
+    Fees            DECIMAL(19,2) NOT NULL,
+    Adjustments     DECIMAL(19,2) NOT NULL,
+    Chargebacks     DECIMAL(19,2) NOT NULL,
+    Amount          DECIMAL(19,2) NOT NULL,
+    FileId          INT           NULL
+);
+GO
+IF OBJECT_ID(N'sitoo.WorldlineAdjustments', N'U') IS NULL
+CREATE TABLE sitoo.WorldlineAdjustments (
+    PayoutRef  NVARCHAR(40)  NOT NULL,
+    Detaljer   NVARCHAR(200) NOT NULL,
+    Belopp     DECIMAL(19,2) NOT NULL,
+    Datum      DATE          NOT NULL,
+    Currency   NVARCHAR(3)   NULL,
+    CONSTRAINT PK_WorldlineAdjustments PRIMARY KEY (PayoutRef, Detaljer, Belopp)
+);
+GO
+IF OBJECT_ID(N'sitoo.WorldlineChargebacks', N'U') IS NULL
+CREATE TABLE sitoo.WorldlineChargebacks (
+    CaseId          NVARCHAR(60)  NOT NULL CONSTRAINT PK_WorldlineChargebacks PRIMARY KEY,
+    PayoutRef       NVARCHAR(40)  NULL,
+    Datum           DATE          NULL,
+    TransactionRef  NVARCHAR(40)  NULL,
+    Reason          NVARCHAR(300) NULL,
+    Belopp          DECIMAL(19,2) NOT NULL,
+    Currency        NVARCHAR(3)   NULL
+);
+GO
+
+-- Sparar en uppladdad rapport. Samma transaktion kan finnas i både månads- och
+-- utbetalningsrapporten; den sparas en gång och kompletteras med det som saknas.
+CREATE OR ALTER PROCEDURE sitoo.MergeWorldline
+    @FileId INT,
+    @Json   NVARCHAR(MAX)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    DECLARE @actions TABLE (A NVARCHAR(10));
+    BEGIN TRAN;
+
+    MERGE sitoo.WorldlineTransactions AS t
+    USING (
+        SELECT * FROM OPENJSON(@Json, '$.transactions') WITH (
+            TransactionRef NVARCHAR(40) '$.ref', Typ NVARCHAR(30) '$.typ', TransactionDate DATE '$.date',
+            TransactionTime TIME(0) '$.time', CustomerNumber NVARCHAR(20) '$.customer', Merchant NVARCHAR(100) '$.merchant',
+            PaymentMethod NVARCHAR(40) '$.method', CardType NVARCHAR(60) '$.cardtype', IssuerCountry NVARCHAR(60) '$.country',
+            Domain NVARCHAR(30) '$.domain', TerminalId NVARCHAR(40) '$.terminal', Status NVARCHAR(30) '$.status',
+            Currency NVARCHAR(3) '$.currency', Amount DECIMAL(19,2) '$.amount', Tip DECIMAL(19,2) '$.tip',
+            Fee DECIMAL(19,2) '$.fee', NetAmount DECIMAL(19,2) '$.net', PayoutRef NVARCHAR(40) '$.payoutref',
+            PayoutDate DATE '$.payoutdate')
+    ) AS s ON t.TransactionRef = s.TransactionRef AND t.Typ = s.Typ
+    WHEN MATCHED THEN UPDATE SET
+        TransactionDate = s.TransactionDate,
+        TransactionTime = COALESCE(t.TransactionTime, s.TransactionTime),
+        CustomerNumber = COALESCE(s.CustomerNumber, t.CustomerNumber),
+        Merchant = COALESCE(s.Merchant, t.Merchant),
+        PaymentMethod = COALESCE(s.PaymentMethod, t.PaymentMethod),
+        CardType = COALESCE(s.CardType, t.CardType),
+        IssuerCountry = COALESCE(s.IssuerCountry, t.IssuerCountry),
+        Domain = COALESCE(s.Domain, t.Domain),
+        TerminalId = COALESCE(s.TerminalId, t.TerminalId),
+        Status = COALESCE(s.Status, t.Status),
+        Currency = COALESCE(s.Currency, t.Currency),
+        Amount = s.Amount,
+        Tip = COALESCE(s.Tip, t.Tip),
+        Fee = COALESCE(s.Fee, t.Fee),
+        NetAmount = COALESCE(s.NetAmount, t.NetAmount),
+        PayoutRef = COALESCE(s.PayoutRef, t.PayoutRef),
+        PayoutDate = COALESCE(s.PayoutDate, t.PayoutDate),
+        FileId = @FileId,
+        UpdatedUtc = SYSUTCDATETIME()
+    WHEN NOT MATCHED THEN INSERT (TransactionRef, Typ, TransactionDate, TransactionTime, CustomerNumber, Merchant,
+        PaymentMethod, CardType, IssuerCountry, Domain, TerminalId, Status, Currency, Amount, Tip, Fee, NetAmount,
+        PayoutRef, PayoutDate, FileId)
+        VALUES (s.TransactionRef, s.Typ, s.TransactionDate, s.TransactionTime, s.CustomerNumber, s.Merchant,
+        s.PaymentMethod, s.CardType, s.IssuerCountry, s.Domain, s.TerminalId, s.Status, s.Currency, s.Amount, s.Tip,
+        s.Fee, s.NetAmount, s.PayoutRef, s.PayoutDate, @FileId)
+    OUTPUT $action INTO @actions;
+
+    MERGE sitoo.WorldlinePayouts AS t
+    USING (
+        SELECT * FROM OPENJSON(@Json, '$.payouts') WITH (
+            PayoutRef NVARCHAR(40) '$.ref', PayoutDate DATE '$.date', CustomerNumber NVARCHAR(20) '$.customer',
+            Merchant NVARCHAR(100) '$.merchant', Account NVARCHAR(40) '$.account', Transactions INT '$.transactions',
+            Currency NVARCHAR(3) '$.currency', Turnover DECIMAL(19,2) '$.turnover', Fees DECIMAL(19,2) '$.fees',
+            Adjustments DECIMAL(19,2) '$.adjustments', Chargebacks DECIMAL(19,2) '$.chargebacks',
+            Amount DECIMAL(19,2) '$.amount')
+    ) AS s ON t.PayoutRef = s.PayoutRef
+    WHEN MATCHED THEN UPDATE SET PayoutDate = s.PayoutDate, CustomerNumber = COALESCE(s.CustomerNumber, t.CustomerNumber),
+        Merchant = COALESCE(s.Merchant, t.Merchant), Account = COALESCE(s.Account, t.Account),
+        Transactions = COALESCE(s.Transactions, t.Transactions), Currency = COALESCE(s.Currency, t.Currency),
+        Turnover = s.Turnover, Fees = s.Fees, Adjustments = s.Adjustments, Chargebacks = s.Chargebacks,
+        Amount = s.Amount, FileId = @FileId
+    WHEN NOT MATCHED THEN INSERT (PayoutRef, PayoutDate, CustomerNumber, Merchant, Account, Transactions, Currency,
+        Turnover, Fees, Adjustments, Chargebacks, Amount, FileId)
+        VALUES (s.PayoutRef, s.PayoutDate, s.CustomerNumber, s.Merchant, s.Account, s.Transactions, s.Currency,
+        s.Turnover, s.Fees, s.Adjustments, s.Chargebacks, s.Amount, @FileId);
+
+    MERGE sitoo.WorldlineAdjustments AS t
+    USING (
+        SELECT PayoutRef, Detaljer, Belopp, MAX(Datum) AS Datum, MAX(Currency) AS Currency
+        FROM OPENJSON(@Json, '$.adjustments') WITH (
+            PayoutRef NVARCHAR(40) '$.payoutref', Detaljer NVARCHAR(200) '$.details', Belopp DECIMAL(19,2) '$.amount',
+            Datum DATE '$.date', Currency NVARCHAR(3) '$.currency')
+        GROUP BY PayoutRef, Detaljer, Belopp
+    ) AS s ON t.PayoutRef = s.PayoutRef AND t.Detaljer = s.Detaljer AND t.Belopp = s.Belopp
+    WHEN MATCHED THEN UPDATE SET Datum = s.Datum, Currency = s.Currency
+    WHEN NOT MATCHED THEN INSERT (PayoutRef, Detaljer, Belopp, Datum, Currency)
+        VALUES (s.PayoutRef, s.Detaljer, s.Belopp, s.Datum, s.Currency);
+
+    MERGE sitoo.WorldlineChargebacks AS t
+    USING (
+        SELECT * FROM OPENJSON(@Json, '$.chargebacks') WITH (
+            CaseId NVARCHAR(60) '$.caseid', PayoutRef NVARCHAR(40) '$.payoutref', Datum DATE '$.date',
+            TransactionRef NVARCHAR(40) '$.ref', Reason NVARCHAR(300) '$.reason', Belopp DECIMAL(19,2) '$.amount',
+            Currency NVARCHAR(3) '$.currency')
+    ) AS s ON t.CaseId = s.CaseId
+    WHEN MATCHED THEN UPDATE SET PayoutRef = s.PayoutRef, Datum = s.Datum, TransactionRef = s.TransactionRef,
+        Reason = s.Reason, Belopp = s.Belopp, Currency = s.Currency
+    WHEN NOT MATCHED THEN INSERT (CaseId, PayoutRef, Datum, TransactionRef, Reason, Belopp, Currency)
+        VALUES (s.CaseId, s.PayoutRef, s.Datum, s.TransactionRef, s.Reason, s.Belopp, s.Currency);
+
+    DECLARE @new INT = (SELECT COUNT(*) FROM @actions WHERE A = 'INSERT');
+    UPDATE sitoo.WorldlineFiles SET NewRows = @new WHERE Id = @FileId;
+    COMMIT;
+    SELECT @new AS NewRows, (SELECT COUNT(*) FROM @actions) AS Rows;
+END
+GO

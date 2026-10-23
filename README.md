@@ -98,6 +98,16 @@ Två sidor i webbgränssnittet ersätter de tidigare Excel-filerna.
 
 **Bokföring** bygger ett konteringsförslag per månad, eller för en valfri period, från z-rapporterna. Debet är betalsätten, där kontanter delas på bankningar och kassa. Kredit är försäljning och moms per momssats samt öresavrundning. Momsen räknas som netto × momssats, och skillnaden mot z-rapportens moms läggs på öresavrundningskontot. Under verifikationen visas varje z-rapport. Ett z-rapportdatum kan rättas (`sitoo.ZReportDateFix`), och bankningar av kontanter registreras på sidan (`sitoo.BankDeposit`). Kontona ställs in under **Bokföring > Konton** med rullistor: varje betalsätt från z-rapporterna får ett konto, och betalsätt med samma konto summeras på en rad (till exempel Swish QR och Swish nr på 1936). Där finns också kontona för försäljning, moms och kontanter, och en kontoplan med kontonamnen som blir texten i verifikationen.
 
+### Worldline (Bambora)
+
+Sitoos z-rapporter visar vad kunderna betalade med kort, men inte Worldlines avgifter. Under **Bokföring > Worldline** laddar du upp Worldlines rapporter i Excel-format från Merchant Portal (reports.bambora.com). Både **månadsrapporter** och **utbetalningsrapporter** fungerar, flera filer kan väljas samtidigt, och en transaktion som finns i flera rapporter sparas bara en gång. Worldline har inget öppet API för rapporterna, därför används filerna.
+
+- **Kortavgifter:** avgifterna för transaktioner i perioden, och andra avgifter som dras på utbetalningarna, bokförs på 6570. De dras från kortkontot 1937, så att 1937 visar det som betalas ut. Kontona ställs in under **Bokföring > Konton**.
+- **Täckning och kontroll:** sidan visar per månad och per dag Sitoos kortbetalningar jämfört med Worldlines transaktioner. Dagar med kortförsäljning men utan Worldline-data markeras *Saknas*, dagar där beloppen skiljer sig markeras *Avvikelse*, och transaktioner som ännu inte finns i någon uppladdad utbetalning saknar avgift. Samma varningar visas på verifikationen.
+- **Säljställen:** välj vilka av Worldlines säljställen som ska räknas.
+
+Datan sparas i `sitoo.WorldlineTransactions`, `sitoo.WorldlinePayouts`, `sitoo.WorldlineAdjustments`, `sitoo.WorldlineChargebacks` och `sitoo.WorldlineFiles`.
+
 ## Webbgränssnittet
 
 - **Översikt:** status per jobb, senaste och nästa körning, fel i klartext, antal rader per tabell, **Kör nu**, **Pausa/Starta** och **Hämta om allt** per datatyp.

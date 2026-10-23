@@ -197,11 +197,21 @@ class Client:
         self.port = port
         self.cookie = None
 
-    def req(self, method, path, form=None):
+    def req(self, method, path, form=None, files=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         headers = {}
         body = None
-        if form is not None:
+        if files is not None:
+            boundary = "----testboundary"
+            parts = []
+            for k, v in (form or {}).items():
+                parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
+            for k, (name, data) in files:
+                parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"; filename="{name}"\r\n'
+                             'Content-Type: application/octet-stream\r\n\r\n'.encode() + data + b"\r\n")
+            body = b"".join(parts) + f"--{boundary}--\r\n".encode()
+            headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+        elif form is not None:
             body = urllib.parse.urlencode(form)
             headers["Content-Type"] = "application/x-www-form-urlencoded"
         if self.cookie:
@@ -452,6 +462,36 @@ class FakeReports:
     def payment_names(self):
         return ["Kort", "Swish QR", "Swish nr"]
 
+    wl_data: dict = {}
+    wl_saved: list = []
+
+    def wl_daily(self, start, end, merchants):
+        FakeReports.calls.append(("wl_daily", start, end, tuple(merchants)))
+        return {d: v for d, v in FakeReports.wl_data.items() if start <= d <= end}
+
+    def wl_other_costs(self, start, end):
+        return _Dec("0.00")
+
+    def wl_files(self, limit=100):
+        return [{"UploadedUtc": datetime(2026, 10, 1, 8, 0), "FileName": "payout_report_20260902.xlsx",
+                 "ReportType": "utbetalning", "Period": "2026-09-02", "Transactions": 2, "NewRows": 2}]
+
+    def wl_merchants(self):
+        return ["Butiken", "Andra butiken"]
+
+    def wl_payouts(self, start, end, merchants):
+        return [{"PayoutDate": _date(2026, 9, 2), "PayoutRef": "B1", "Merchant": "Butiken", "Transactions": 2,
+                 "Turnover": _Dec("19962.50"), "Fees": _Dec("-200.00"), "Adjustments": _Dec("0"),
+                 "Chargebacks": _Dec("0"), "Amount": _Dec("19762.50")}]
+
+    def wl_file_by_hash(self, digest):
+        return next((f for f in FakeReports.wl_saved if f["hash"] == digest), None)
+
+    def wl_save(self, name, report, digest):
+        FakeReports.wl_saved.append({"hash": digest, "name": name, "kind": report.kind,
+                                     "UploadedUtc": datetime(2026, 10, 23, 12, 0)})
+        return len(report.transactions), len(report.transactions)
+
     def move_order_stamp(self, o, f, t):
         FakeReports.calls.append(("move_order", o, f, t))
 
@@ -594,6 +634,44 @@ class ReportPageTests(ReportBase):
         self.assertIn("fel=", loc)
         self.assertEqual(self.store.values()["acc_chart"], "1930=Företagskonto; 1936=Swish")
 
+    def test_worldline_upload_page_and_fees(self):
+        from test_worldline import monthly_file, payout_file
+        FakeReports.wl_saved = []
+        FakeReports.wl_data = {}
+        status, _, html = self.c.req("GET", "/bokforing/worldline?manad=2026-09")
+        self.assertEqual(status, 200)
+        self.assertIn('enctype="multipart/form-data"', html)
+        self.assertIn("Ej uppladdad", html)                  # z-rapport med kort men ingen Worldline-data
+        self.assertIn("Andra butiken", html)
+        csrf = self.c.csrf("/bokforing/worldline")
+        _, loc, _ = self.c.req("POST", "/bokforing/worldline/ladda-upp", {"csrf": csrf},
+                               files=[("filer", ("payout.xlsx", payout_file())), ("filer", ("monthly.xlsx", monthly_file())),
+                                      ("filer", ("fel.xlsx", b"junk"))])
+        self.assertTrue(loc.startswith("/bokforing/worldline?resultat="))
+        self.assertEqual([f["kind"] for f in FakeReports.wl_saved], ["utbetalning", "manad"])
+        _, _, html = self.c.req("GET", loc)
+        self.assertIn("utbetalningsrapport 2026-09-02 – 2 transaktioner", html)
+        self.assertIn("Fel i fel.xlsx", html)
+        # Samma fil igen hoppas över
+        _, loc, _ = self.c.req("POST", "/bokforing/worldline/ladda-upp", {"csrf": csrf},
+                               files=[("filer", ("payout.xlsx", payout_file()))])
+        _, _, html = self.c.req("GET", loc)
+        self.assertIn("redan uppladdad", html)
+        # Säljställen
+        _, loc, _ = self.c.req("POST", "/bokforing/worldline/saljstallen", {"csrf": csrf, "m_0": "Butiken"})
+        self.assertEqual(self.store.values()["wl_merchants"], "Butiken")
+        # Avgifter i verifikationen och korsreferens per dag
+        FakeReports.wl_data = {_date(2026, 9, 1): {"Belopp": "19962.50", "Antal": 110, "Avgift": "-200.00",
+                                                   "UtanAvgift": 0, "Utbetalningar": "B1"}}
+        _, _, html = self.c.req("GET", "/bokforing?manad=2026-09")
+        self.assertIn("<td>6570</td><td>Kortavgifter Worldline", html)
+        self.assertIn("19 762,50", html)                     # 1937 efter avgift
+        self.assertIn("Balanserar", html)
+        self.assertIn(("wl_daily", _date(2026, 9, 1), _date(2026, 9, 30), ("Butiken",)), FakeReports.calls)
+        _, _, html = self.c.req("GET", "/bokforing/worldline?manad=2026-09")
+        self.assertIn("Stämmer", html)
+        self.assertIn("B1", html)
+
     def test_accounting_page(self):
         status, _, html = self.c.req("GET", "/bokforing?manad=2026-09")
         self.assertEqual(status, 200)
@@ -606,7 +684,7 @@ class ReportPageTests(ReportBase):
 
     def test_accounting_custom_period_and_csv(self):
         self.c.req("GET", "/bokforing?fran=2026-09-01&till=2026-09-15")
-        self.assertEqual(FakeReports.calls[-1], ("zrows", _date(2026, 9, 1), _date(2026, 9, 15)))
+        self.assertIn(("zrows", _date(2026, 9, 1), _date(2026, 9, 15)), FakeReports.calls)
         _, _, body = self.c.req("GET", "/bokforing.csv?manad=2026-09")
         self.assertIn("1937;Försäljning – Kort;19962,50;0,00", body)
         self.assertIn("Kassa 1;1845;2026-09-01;19997,50", body)
