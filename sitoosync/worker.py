@@ -18,7 +18,7 @@ from .sitoo import SitooClient
 log = logging.getLogger("sitoosync")
 
 JOB_LABELS = {
-    "stores_warehouses": "Butiker och lager",
+    "stores_warehouses": "Butiker, lager och leverantörer",
     "products": "Produkter",
     "products_deleted": "Borttagna produkter",
     "stock": "Lagersaldo",

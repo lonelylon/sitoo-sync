@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from .config import Config
-from .sitoo import SitooClient
+from .sitoo import SitooClient, SitooError
 
 log = logging.getLogger(__name__)
 
@@ -81,8 +81,23 @@ def sync_stores_and_warehouses(ctx: Context) -> int:
         warehouses = ctx.api.all_items(f"/sites/{site}/warehouses.json")
         if warehouses:
             rows += ctx.db.exec_proc("MergeWarehouses", SiteId=site, Json=dumps(warehouses), FullSync=1)
+        rows += _sync_manufacturers(ctx, site)
         log.info("Site %s: %s butiker, %s lager", site, len(stores), len(warehouses))
     return rows
+
+
+def _sync_manufacturers(ctx: Context, site: int) -> int:
+    """Leverantörernas namn (Sitoo kallar dem manufacturers). Ett fel här får inte
+    stoppa synken av butiker och lager."""
+    try:
+        items = ctx.api.all_items(f"/sites/{site}/manufacturers.json")
+    except SitooError as e:
+        log.warning("Site %s: kunde inte hämta leverantörer: %s", site, e)
+        return 0
+    log.info("Site %s: %s leverantörer", site, len(items))
+    if not items:
+        return 0
+    return ctx.db.exec_proc("MergeManufacturers", SiteId=site, Json=dumps(items), FullSync=1)
 
 
 def sync_products(ctx: Context) -> int:

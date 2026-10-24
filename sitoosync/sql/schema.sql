@@ -76,6 +76,21 @@ CREATE TABLE sitoo.Stores (
 GO
 
 ------------------------------------------------------------------------------
+-- Leverantörer (Sitoos tillverkare, manufacturers)
+------------------------------------------------------------------------------
+IF OBJECT_ID(N'sitoo.Manufacturers', N'U') IS NULL
+CREATE TABLE sitoo.Manufacturers (
+    SiteId         INT           NOT NULL,
+    ManufacturerId INT           NOT NULL,
+    Name           NVARCHAR(255) NULL,
+    IsDeleted      BIT           NOT NULL CONSTRAINT DF_Manufacturers_IsDeleted DEFAULT 0,
+    RawJson        VARBINARY(MAX) NULL,
+    SyncedUtc      DATETIME2(0)  NOT NULL,
+    CONSTRAINT PK_Manufacturers PRIMARY KEY (SiteId, ManufacturerId)
+);
+GO
+
+------------------------------------------------------------------------------
 -- Lager
 ------------------------------------------------------------------------------
 IF OBJECT_ID(N'sitoo.Warehouses', N'U') IS NULL
@@ -713,6 +728,52 @@ BEGIN
         UPDATE sitoo.Warehouses SET IsDeleted = 1, SyncedUtc = @now
         WHERE SiteId = @SiteId AND IsDeleted = 0
           AND WarehouseId NOT IN (SELECT WarehouseId FROM #src);
+
+    COMMIT;
+    SELECT @rows AS AffectedRows;
+END;
+GO
+
+------------------------------------------------------------------------------
+-- Leverantörer. Hela listan hämtas varje gång (FullSync).
+------------------------------------------------------------------------------
+CREATE OR ALTER PROCEDURE sitoo.MergeManufacturers
+    @SiteId INT,
+    @Json   NVARCHAR(MAX),
+    @FullSync BIT = 1
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    DECLARE @now DATETIME2(0) = SYSUTCDATETIME();
+
+    SELECT r.[value] AS RawJson, j.*
+    INTO #src
+    FROM OPENJSON(@Json) r
+    CROSS APPLY OPENJSON(r.[value]) WITH (
+        ManufacturerId INT           '$.manufacturerid',
+        Name           NVARCHAR(255) '$.name'
+    ) j
+    WHERE j.ManufacturerId IS NOT NULL;
+
+    BEGIN TRAN;
+
+    MERGE sitoo.Manufacturers AS t
+    USING #src AS s
+        ON t.SiteId = @SiteId AND t.ManufacturerId = s.ManufacturerId
+    WHEN MATCHED THEN UPDATE SET
+        Name = s.Name, IsDeleted = 0, RawJson = COMPRESS(s.RawJson), SyncedUtc = @now
+    WHEN NOT MATCHED THEN INSERT
+        (SiteId, ManufacturerId, Name, IsDeleted, RawJson, SyncedUtc)
+    VALUES
+        (@SiteId, s.ManufacturerId, s.Name, 0, COMPRESS(s.RawJson), @now);
+
+    DECLARE @rows INT = @@ROWCOUNT;
+
+    IF @FullSync = 1 AND EXISTS (SELECT 1 FROM #src)
+        UPDATE sitoo.Manufacturers SET IsDeleted = 1, SyncedUtc = @now
+        WHERE SiteId = @SiteId AND IsDeleted = 0
+          AND ManufacturerId NOT IN (SELECT ManufacturerId FROM #src);
 
     COMMIT;
     SELECT @rows AS AffectedRows;

@@ -28,6 +28,8 @@ class FakeSitoo:
     def __init__(self):
         self.products = [{"productid": i, "sku": f"SKU{i}", "title": f"Produkt {i}",
                           "datemodified": 1_700_000_000 + i, "moneyprice": "10.00"} for i in range(1, 251)]
+        self.manufacturers = [{"manufacturerid": 7, "name": "Leverantör A"},
+                              {"manufacturerid": 25, "name": "Leverantör B"}]
         self.stores = [{"storeid": 1, "name": "Butik A"}, {"storeid": 2, "name": "Butik B"}]
         self.warehouses = [{"warehouseid": 10, "name": "Lager A", "storeid": 1},
                            {"warehouseid": 11, "name": "Lager B", "storeid": 2}]
@@ -77,6 +79,8 @@ class FakeSitoo:
             return env(self.stores)
         if p == "/sites/1/warehouses.json":
             return env(self.warehouses)
+        if p == "/sites/1/manufacturers.json":
+            return env(self.manufacturers)
         if p.startswith("/sites/1/warehouses/") and p.endswith("/warehouseitems.json"):
             wid = int(p.split("/")[4])
             if wid not in self.stock:
@@ -159,6 +163,7 @@ class FakeDb:
         keyfn = {
             "MergeStores": lambda r: (params["SiteId"], r["storeid"]),
             "MergeWarehouses": lambda r: (params["SiteId"], r["warehouseid"]),
+            "MergeManufacturers": lambda r: (params["SiteId"], r["manufacturerid"]),
             "MergeProducts": lambda r: (params["SiteId"], r["productid"]),
             "MergeStockItems": lambda r: (params["SiteId"], params["WarehouseId"], r["sku"]),
             "MergeOrders": lambda r: r["orderid"],
@@ -283,8 +288,18 @@ class SyncTests(unittest.TestCase):
         J.sync_stores_and_warehouses(self.ctx)
         self.assertEqual(len(self.db.tables["Stores"]), 2)
         self.assertEqual(len(self.db.tables["Warehouses"]), 2)
+        self.assertEqual(self.db.tables["Manufacturers"][(1, 25)]["name"], "Leverantör B")
         merge = [c for c in self.db.calls if c[0] == "MergeStores"][0]
         self.assertEqual(merge[1]["FullSync"], 1)
+
+    def test_manufacturer_error_does_not_stop_stores(self):
+        self.fake.manufacturers = None  # ger fel i låtsas-servern
+        orig = self.fake.handle
+        self.fake.handle = lambda p, q: ((403, {}, {"statuscode": 403, "errortext": "forbidden"})
+                                         if p.endswith("manufacturers.json") else orig(p, q))
+        J.sync_stores_and_warehouses(self.ctx)
+        self.assertEqual(len(self.db.tables["Warehouses"]), 2)
+        self.assertNotIn("Manufacturers", self.db.tables)
 
     def test_stock_per_warehouse_incremental(self):
         J.sync_stock(self.ctx)
@@ -550,7 +565,7 @@ class SchemaTests(unittest.TestCase):
     def test_schema_splits_and_has_all_procs(self):
         batches = split_batches(SCHEMA_FILE.read_text(encoding="utf-8"))
         text = "\n".join(batches)
-        for proc in ["MergeStores", "MergeWarehouses", "MergeProducts", "MarkDeletedProducts",
+        for proc in ["MergeStores", "MergeWarehouses", "MergeManufacturers", "MergeProducts", "MarkDeletedProducts",
                      "MergeStockItems", "MergeOrders", "MergeZReports", "MergeUsers"]:
             self.assertIn(f"CREATE OR ALTER PROCEDURE sitoo.{proc}", text)
         # Varje CREATE OR ALTER måste ligga först i sin egen batch
@@ -565,6 +580,7 @@ class SchemaTests(unittest.TestCase):
         expected = {
             "MergeStores": ["@SiteId", "@Json", "@FullSync"],
             "MergeWarehouses": ["@SiteId", "@Json", "@FullSync"],
+            "MergeManufacturers": ["@SiteId", "@Json", "@FullSync"],
             "MergeProducts": ["@SiteId", "@Json"],
             "MarkDeletedProducts": ["@SiteId", "@IdsJson"],
             "MergeStockItems": ["@SiteId", "@WarehouseId", "@Json"],
