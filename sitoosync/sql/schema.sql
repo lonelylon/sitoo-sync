@@ -747,14 +747,17 @@ BEGIN
     SET XACT_ABORT ON;
     DECLARE @now DATETIME2(0) = SYSUTCDATETIME();
 
-    SELECT r.[value] AS RawJson, j.*
+    SELECT r.[value] AS RawJson,
+           COALESCE(j.ExternalCompanyId, j.ManufacturerIdAlt) AS ManufacturerId, j.Name
     INTO #src
     FROM OPENJSON(@Json) r
     CROSS APPLY OPENJSON(r.[value]) WITH (
-        ManufacturerId INT           '$.manufacturerid',
+        -- Sitoo kallar leverantörens id externalcompanyid (= ManufacturerId på produkten)
+        ExternalCompanyId INT        '$.externalcompanyid',
+        ManufacturerIdAlt INT        '$.manufacturerid',
         Name           NVARCHAR(255) '$.name'
     ) j
-    WHERE j.ManufacturerId IS NOT NULL;
+    WHERE COALESCE(j.ExternalCompanyId, j.ManufacturerIdAlt) IS NOT NULL;
 
     BEGIN TRAN;
 

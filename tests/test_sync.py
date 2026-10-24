@@ -28,8 +28,8 @@ class FakeSitoo:
     def __init__(self):
         self.products = [{"productid": i, "sku": f"SKU{i}", "title": f"Produkt {i}",
                           "datemodified": 1_700_000_000 + i, "moneyprice": "10.00"} for i in range(1, 251)]
-        self.manufacturers = [{"manufacturerid": 7, "name": "Leverantör A"},
-                              {"manufacturerid": 25, "name": "Leverantör B"}]
+        self.manufacturers = [{"externalcompanyid": 7, "name": "Leverantör A"},
+                              {"externalcompanyid": 25, "name": "Leverantör B"}]
         self.stores = [{"storeid": 1, "name": "Butik A"}, {"storeid": 2, "name": "Butik B"}]
         self.warehouses = [{"warehouseid": 10, "name": "Lager A", "storeid": 1},
                            {"warehouseid": 11, "name": "Lager B", "storeid": 2}]
@@ -163,7 +163,7 @@ class FakeDb:
         keyfn = {
             "MergeStores": lambda r: (params["SiteId"], r["storeid"]),
             "MergeWarehouses": lambda r: (params["SiteId"], r["warehouseid"]),
-            "MergeManufacturers": lambda r: (params["SiteId"], r["manufacturerid"]),
+            "MergeManufacturers": lambda r: (params["SiteId"], r["externalcompanyid"]),
             "MergeProducts": lambda r: (params["SiteId"], r["productid"]),
             "MergeStockItems": lambda r: (params["SiteId"], params["WarehouseId"], r["sku"]),
             "MergeOrders": lambda r: r["orderid"],
