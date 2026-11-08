@@ -89,7 +89,8 @@ class Database:
             cur.execute("SELECT DB_ID(%s)", (self.database,))
             if cur.fetchone()[0] is None:
                 log.info("Skapar databasen %s", self.database)
-                cur.execute("EXEC(N'CREATE DATABASE ' + QUOTENAME(%s))", (self.database,))
+                cur.execute("DECLARE @sql NVARCHAR(400) = N'CREATE DATABASE ' + QUOTENAME(%s); EXEC(@sql)",
+                            (self.database,))
         finally:
             conn.close()
 

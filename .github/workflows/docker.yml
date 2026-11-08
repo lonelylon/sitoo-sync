@@ -20,9 +20,18 @@ jobs:
         with:
           python-version: "3.12"
       - name: Kör tester
-        run: python -m unittest discover -s tests -v
+        shell: bash
         env:
           PYTHONPATH: ".:tests"
+        run: |
+          set +e
+          python -m unittest discover -s tests -v 2>&1 | tee out.txt
+          status=${PIPESTATUS[0]}
+          if [ $status -ne 0 ]; then
+            msg=$(grep -vE "^(Sitoo|Väntar)" out.txt | grep -A30 -E "^(FAIL|ERROR):" | head -80 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+            echo "::error title=Tester::$msg"
+          fi
+          exit $status
 
   sql:
     # Schemat och SQL-frågorna mot en riktig SQL Server 2019
