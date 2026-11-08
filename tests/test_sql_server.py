@@ -39,7 +39,9 @@ class SqlServerTests(unittest.TestCase):
         r = self.reports()
         for i, (name, data) in enumerate((("payout_report_20260902.xlsx", payout_file()),
                                           ("monthly_report_202609.xlsx", monthly_file()),
-                                          ("payout_report_20260902.xlsx", payout_file()))):  # samma igen: inga dubbletter
+                                          ("payout_report_20260902.xlsx", payout_file()),   # samma igen: inga dubbletter
+                                          ("payout_report_20260902.xlsx", payout_file("en")),
+                                          ("monthly_report_202609.xlsx", monthly_file("en")))):
             rep = parse_report(data)
             digest = file_hash(data + bytes([i]))
             new, total = r.wl_save(name, rep, digest)
@@ -54,7 +56,8 @@ class SqlServerTests(unittest.TestCase):
         self.assertIsNone(by_ref["1003"]["Fee"])
         self.assertEqual(by_ref["1004"]["Amount"], Decimal("-20.00"))
         files = r.wl_files()
-        self.assertEqual(len(files), 3)
+        self.assertEqual(len(files), 5)
+        self.assertEqual(files[0]["NewRows"], 0)             # engelsk version av samma rapport: inget nytt
         self.assertEqual(files[-1]["NewRows"], 2)            # första filen: två nya
         payouts = r.wl_payouts(date(2026, 9, 1), date(2026, 9, 30), [])
         self.assertEqual([(p["PayoutRef"], p["Amount"]) for p in payouts], [("B1", Decimal("248.00"))])
@@ -63,6 +66,7 @@ class SqlServerTests(unittest.TestCase):
         self.assertEqual(daily[date(2026, 9, 30)]["UtanAvgift"], 2)
         self.assertEqual(r.wl_daily(date(2026, 9, 1), date(2026, 9, 30), ["Annan"]), {})
         self.assertEqual(r.wl_other_costs(date(2026, 9, 1), date(2026, 9, 30)), Decimal("99.00"))
+        self.assertEqual(self.db.query("SELECT COUNT(*) AS N FROM sitoo.WorldlineAdjustments")[0]["N"], 2)
         self.assertEqual(r.wl_merchants(), ["Butiken"])
         self.assertEqual(r.first_data_year(), 2026)
 

@@ -602,7 +602,8 @@ class Reports:
     def wl_other_costs(self, start: date, end: date) -> Decimal:
         """Justeringar utöver transaktionsavgifterna (t.ex. månadsavgifter), som positiv kostnad."""
         rows = self._q("SELECT SUM(Belopp) AS Belopp FROM sitoo.WorldlineAdjustments "
-                       "WHERE Datum >= %s AND Datum <= %s AND LOWER(Detaljer) <> 'transaktionsavgifter'",
+                       "WHERE Datum >= %s AND Datum <= %s "
+                       "AND LOWER(Detaljer) NOT IN ('transaktionsavgifter', 'transaction fees')",
                        (start, end), "worldline justeringar")
         total = Decimal(rows[0]["Belopp"] or 0) if rows else Decimal(0)
         return (-total).quantize(Decimal("0.01"))

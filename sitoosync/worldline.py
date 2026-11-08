@@ -26,6 +26,38 @@ REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 MAX_UNCOMPRESSED = 200 * 1024 * 1024
 FEE_ADJUSTMENT = "transaktionsavgifter"   # justeringsraden som redan finns som avgift per transaktion
 
+# Rapporterna kan laddas ner på svenska eller engelska. Engelska namn översätts till de
+# svenska, så att resten av inläsningen och databasen är densamma oavsett språk.
+SHEET_ALIASES = {
+    "overview": "Överblick", "sales": "Försäljning", "payouts": "Utbetalningar",
+    "payout details": "Utbetalningar Detaljerat", "chargebacks": "Reklamationer", "adjustments": "Justeringar",
+}
+TITLE_ALIASES = {"monthly report": "Månadsrapport", "payout report": "Utbetalningsrapport",
+                 "report": "Rapport", "period": "Period"}
+HEADER_ALIASES = {
+    # Försäljning / Sales
+    "TRANSACTION DATE": "TRANSAKTIONSDATUM", "TIME": "TID", "MERCHANT ID": "KUNDNUMMER",
+    "TRANSACTION REF": "TRANSAKTIONSREFERENS", "TRANSACTION REFERENCE": "TRANSAKTIONSREFERENS",
+    "PAYMENT TYPE": "BETALSÄTT", "CARD NUMBER": "KORTNR", "CARD TYPE": "KORTTYP", "TYPE": "TYP",
+    "STATE": "STATUS", "STATUS": "STATUS", "CURRENCY": "VALUTA", "SALE AMOUNT": "FÖRSÄLJNINGSBELOPP",
+    "TIP": "DRICKS", "TERMINAL ID": "TERMINAL-ID", "CASHIER ID": "KASSÖR-ID", "SALES LOCATION": "SÄLJSTÄLLE",
+    # Utbetalningar / Payouts
+    "DATE": "DATUM", "REFERENCE": "REFERENS", "BENEFICIARY ACCOUNT": "MOTTAGARENS KONTO",
+    "TRANSACTIONS": "TRANSAKTIONER", "TURNOVER": "OMSÄTTNING", "FEES": "AVGIFTER", "ADJUSTMENTS": "JUSTERINGAR",
+    "CHARGEBACKS": "REKLAMATIONER", "AMOUNT": "BELOPP",
+    # Utbetalningar Detaljerat / Payout Details
+    "PAYOUT DATE": "UTBETALNINGSDATUM", "SUB MERCHANT": "UNDERHANDLARE", "PAYOUT REF": "UTBETALNINGSREFERENS",
+    "ISSUING COUNTRY": "UTFÄRDANDE LAND", "TRANSACTION DOMAIN": "TRANSAKTIONENS DOMÄN",
+    "TRANSACTION COUNTRY": "TRANSAKTIONENS LAND", "TRANSACTION AMOUNT": "TRANSAKTIONSBELOPP",
+    "SETTLEMENT AMOUNT": "BELOPP", "EXCHANGE RATE": "VÄXLINGSKURS", "TRANSACTION FEE": "TRANSAKTIONSAVGIFT",
+    "FINAL AMOUNT": "SLUTBELOPP", "ADDITIONAL REF 1": "TILLÄGGSREF. 1", "ADDITIONAL REF 2": "TILLÄGGSREF. 2",
+    "ADDITIONAL REF 3": "TILLÄGGSREF. 3",
+    # Justeringar och Reklamationer / Adjustments and Chargebacks
+    "DETAILS": "DETALJER", "REPORT DATE": "RAPPORTERINGSDATUM", "TRANSACTION TIME": "TRANSAKTIONSTID",
+}
+# Justeringstexter som sparas på svenska, så att samma justering inte blir två rader beroende på språk
+DETAIL_ALIASES = {"transaction fees": "Transaktionsavgifter"}
+
 
 class WorldlineError(Exception):
     """Filen kunde inte läsas som en Worldline-rapport."""
@@ -153,6 +185,7 @@ def _table(rows: list[list]) -> list[dict]:
     seen: dict[str, int] = {}
     for h in rows[0]:
         key = (_text(h) or "").upper()
+        key = HEADER_ALIASES.get(" ".join(key.split()), key)
         seen[key] = seen.get(key, 0) + 1
         header.append(key if seen[key] == 1 else f"{key}_{seen[key]}")
     out = []
@@ -209,9 +242,17 @@ def file_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _detail(text: str | None) -> str:
+    if not text:
+        return "Justering"
+    return DETAIL_ALIASES.get(text.casefold(), text)
+
+
 def _sheet(sheets: dict, name: str) -> list[list]:
+    """Fliken med det svenska namnet, eller motsvarande engelska flik."""
     for k, v in sheets.items():
-        if k.strip().casefold() == name.casefold():
+        key = " ".join(k.split()).casefold()
+        if key == name.casefold() or SHEET_ALIASES.get(key, "").casefold() == name.casefold():
             return v
     return []
 
@@ -223,6 +264,7 @@ def _overview(rows: list[list]) -> dict[str, str]:
         cells = [_text(x) for x in r if _text(x)]
         if not cells:
             continue
+        cells[0] = TITLE_ALIASES.get(cells[0].casefold(), cells[0])
         if cells[0] in ("Månadsrapport", "Utbetalningsrapport") and "title" not in info:
             info["title"] = cells[0]
         elif cells[0] in ("Rapport", "Period") and len(cells) > 1:
@@ -240,7 +282,8 @@ def parse_report(data: bytes) -> Report:
     elif info.get("title") == "Utbetalningsrapport" or details:
         kind = "utbetalning"
     else:
-        raise WorldlineError("Hittar varken en månadsrapport eller en utbetalningsrapport från Worldline i filen.")
+        raise WorldlineError("Hittar varken en månadsrapport eller en utbetalningsrapport från Worldline i filen "
+                             "(flikarna Utbetalningar Detaljerat/Payout Details eller Försäljning/Sales saknas).")
     rep = Report(kind=kind, period=info.get("period"), reference=info.get("rapport"))
 
     txs: dict[tuple, dict] = {}
@@ -294,7 +337,7 @@ def parse_report(data: bytes) -> Report:
     rep.transactions = list(txs.values())
 
     for r in _table(_sheet(sheets, "Justeringar")):
-        a = {"payoutref": _text(_get(r, "UTBETALNINGSREFERENS")), "details": _text(_get(r, "DETALJER")) or "Justering",
+        a = {"payoutref": _text(_get(r, "UTBETALNINGSREFERENS")), "details": _detail(_text(_get(r, "DETALJER"))),
              "amount": _money(_get(r, "BELOPP")), "date": _date(_get(r, "DATUM")), "currency": _text(_get(r, "VALUTA"))}
         if a["payoutref"] and a["amount"] is not None and a["date"]:
             rep.adjustments.append(a)

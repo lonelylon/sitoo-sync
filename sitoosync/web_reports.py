@@ -661,7 +661,7 @@ class ReportPagesMixin:
 
         upload = f"""<div class="card"><h2>Ladda upp rapporter</h2>
 <p class="lead small">Ladda ner rapporterna i Excel-format från <a href="{WORLDLINE_PORTAL}" target="_blank" rel="noopener noreferrer">Worldlines Merchant Portal</a> och ladda upp dem här.
-Både <b>månadsrapporter</b> och <b>utbetalningsrapporter</b> fungerar, och flera filer kan väljas samtidigt.
+Både <b>månadsrapporter</b> och <b>utbetalningsrapporter</b> fungerar, på svenska eller engelska, och flera filer kan väljas samtidigt.
 Samma transaktion sparas bara en gång, så det gör inget om rapporterna överlappar.</p>
 <form method="post" action="/bokforing/worldline/ladda-upp" enctype="multipart/form-data" id="wl_form">{csrf}
 <label class="drop" id="wl_drop" for="wl_files">

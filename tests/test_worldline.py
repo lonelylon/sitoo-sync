@@ -63,8 +63,43 @@ def xlsx(sheets: dict[str, list[list]]) -> bytes:
     return buf.getvalue()
 
 
-def payout_file():
-    return xlsx({
+def english(sheets: dict) -> dict:
+    """Samma rapport som Worldline levererar den på engelska: flik-, rubrik- och textnamn översatta."""
+    from sitoosync.worldline import HEADER_ALIASES, SHEET_ALIASES, TITLE_ALIASES
+    sheet_en = {sv: en.title() if en != "payout details" else "Payout Details" for en, sv in SHEET_ALIASES.items()}
+    head_en = {}
+    for en, sv in HEADER_ALIASES.items():
+        head_en.setdefault(sv, en)
+    head_en.update({"BELOPP": "AMOUNT", "TRANSAKTIONSREF": "TRANSACTION REF", "KORTNUMMER": "CARD NUMBER"})
+    text_en = {sv: en.capitalize() for en, sv in TITLE_ALIASES.items()}
+    text_en["Transaktionsavgifter"] = "Transaction fees"
+    out = {}
+    for name, rows in sheets.items():
+        new_rows = []
+        for i, row in enumerate(rows):
+            if i == 0 and name != "Överblick":
+                row = [head_en.get(h, h) if isinstance(h, str) else h for h in row]
+                if name == "Utbetalningar Detaljerat":
+                    row = ["SETTLEMENT AMOUNT" if h == "AMOUNT" else h for h in row]
+            else:
+                row = [text_en.get(v, v) if isinstance(v, str) else v for v in row]
+            new_rows.append(row)
+        out[sheet_en.get(name, name)] = new_rows
+    return out
+
+
+def payout_file(lang: str = "sv"):
+    sheets = payout_sheets()
+    return xlsx(english(sheets) if lang == "en" else sheets)
+
+
+def monthly_file(lang: str = "sv"):
+    sheets = monthly_sheets()
+    return xlsx(english(sheets) if lang == "en" else sheets)
+
+
+def payout_sheets():
+    return ({
         "Överblick": [[None], [None, "Utbetalningsrapport"], [None, "Rapport", "B1"], [None, "Period", "2026-09-02"]],
         "Utbetalningar Detaljerat": [DETAIL_HEAD,
                                      detail("2026-09-02", "2026-09-01", "1001", 100, -1.0, "B1"),
@@ -76,10 +111,10 @@ def payout_file():
     })
 
 
-def monthly_file():
+def monthly_sheets():
     sales_head = ["TRANSAKTIONSDATUM", "TID", "KUNDNUMMER", "TRANSAKTIONSREF", "BETALSÄTT", "KORTNUMMER", "KORTTYP",
                   "TYP", "STATUS", "VALUTA", "FÖRSÄLJNINGSBELOPP", "DRICKS", "TERMINAL-ID", "KASSÖR-ID", "SÄLJSTÄLLE"]
-    return xlsx({
+    return ({
         "Överblick": [[None], [None, "Månadsrapport"], [None, "Rapport", "September"], [None, "Period", "20260901-20260930"]],
         "Försäljning": [sales_head,
                         ["2026-09-01", "11:00:00", "222", "1001", "Visa", "x", "Debit", "Sale", "Cleared", "SEK", 100, 0, "T1", None, "Butiken"],
@@ -121,6 +156,20 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(rep.payouts[0]["amount"], Decimal("248.00"))   # från fliken Utbetalningar
         self.assertEqual(rep.dates, (date(2026, 9, 1), date(2026, 9, 30)))
         rep.as_json_dict()                                              # går att serialisera
+
+    def test_english_reports_give_same_data(self):
+        for build in (payout_file, monthly_file):
+            sv, en = parse_report(build("sv")), parse_report(build("en"))
+            self.assertEqual(sv.kind, en.kind)
+            self.assertEqual(en.period, sv.period)
+            self.assertEqual(sorted(en.transactions, key=lambda t: t["ref"]),
+                             sorted(sv.transactions, key=lambda t: t["ref"]))
+            self.assertEqual(en.payouts, sv.payouts)
+            self.assertEqual(en.adjustments, sv.adjustments)
+        # 'Transaction fees' räknas som transaktionsavgifter, så de dras inte två gånger
+        p = parse_report(payout_file("en")).payouts[0]
+        self.assertEqual((p["adjustments"], p["amount"]), (Decimal("-99.00"), Decimal("248.00")))
+        self.assertEqual(parse_report(payout_file("en")).adjustments[0]["details"], "Transaktionsavgifter")
 
     def test_not_a_report(self):
         with self.assertRaises(WorldlineError):
