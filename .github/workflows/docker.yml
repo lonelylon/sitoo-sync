@@ -24,8 +24,39 @@ jobs:
         env:
           PYTHONPATH: ".:tests"
 
+  sql:
+    # Schemat och SQL-frågorna mot en riktig SQL Server 2019
+    runs-on: ubuntu-latest
+    services:
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2019-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "Test_Losen_2019!"
+          MSSQL_PID: Express
+        ports:
+          - 1433:1433
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Kör tester mot SQL Server
+        shell: bash
+        env:
+          PYTHONPATH: ".:tests"
+          SQLTEST_SERVER: "127.0.0.1"
+          SQLTEST_PASSWORD: "Test_Losen_2019!"
+        run: |
+          set +e
+          python -m unittest test_sql_server -v 2>&1 | tee out.txt
+          status=${PIPESTATUS[0]}
+          if [ $status -ne 0 ]; then grep -vE "^(Sitoo|Väntar)" out.txt | tail -60 | while IFS= read -r l; do echo "::error::$l"; done; fi
+          exit $status
+
   image:
-    needs: test
+    needs: [test, sql]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
