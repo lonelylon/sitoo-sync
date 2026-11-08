@@ -22,6 +22,8 @@ from .reports import (
 
 log = logging.getLogger("sitoosync.web")
 
+WORLDLINE_PORTAL = "https://reports.bambora.com/merchants/"
+
 # Fasta konton i verifikationen: (nyckel i DEFAULT_ACCOUNTS, rubrik)
 FIXED_ACCOUNTS = [
     ("net_25", "Försäljning 25 % moms"), ("vat_25", "Utgående moms 25 %"),
@@ -658,7 +660,7 @@ class ReportPagesMixin:
             msgs += '<div class="alert a-ok">Sparat.</div>'
 
         upload = f"""<div class="card"><h2>Ladda upp rapporter</h2>
-<p class="lead small">Ladda ner rapporterna i Excel-format från Worldlines Merchant Portal (reports.bambora.com) och ladda upp dem här.
+<p class="lead small">Ladda ner rapporterna i Excel-format från <a href="{WORLDLINE_PORTAL}" target="_blank" rel="noopener noreferrer">Worldlines Merchant Portal</a> och ladda upp dem här.
 Både <b>månadsrapporter</b> och <b>utbetalningsrapporter</b> fungerar, och flera filer kan väljas samtidigt.
 Samma transaktion sparas bara en gång, så det gör inget om rapporterna överlappar.</p>
 <form method="post" action="/bokforing/worldline/ladda-upp" enctype="multipart/form-data" id="wl_form">{csrf}
@@ -786,7 +788,9 @@ som ännu inte finns i någon uppladdad utbetalning.</p>
                       f'<th class="num">Nya</th></tr></thead><tbody>{frows}</tbody></table></div></div>')
 
         body = f"""<h1>Worldline</h1>
-<p class="lead"><a href="/bokforing">← Tillbaka till Bokföring</a></p>{msgs}
+<div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">
+<p class="lead" style="margin:0"><a href="/bokforing">← Tillbaka till Bokföring</a></p>
+<a class="btn" href="{WORLDLINE_PORTAL}" target="_blank" rel="noopener noreferrer">Öppna Worldline Merchant Portal ↗</a></div>{msgs}
 <div class="topgrid"><div>{upload}{merch_html}</div>{month_card}</div>
 {day_card}{files_card}
 <style>{REPORT_CSS}

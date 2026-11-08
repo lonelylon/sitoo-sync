@@ -52,7 +52,10 @@ jobs:
           set +e
           python -m unittest test_sql_server -v 2>&1 | tee out.txt
           status=${PIPESTATUS[0]}
-          if [ $status -ne 0 ]; then grep -vE "^(Sitoo|Väntar)" out.txt | tail -60 | while IFS= read -r l; do echo "::error::$l"; done; fi
+          if [ $status -ne 0 ]; then
+            msg=$(grep -vE "^(Sitoo|Väntar)" out.txt | grep -vE "^\s+File \"src/pymssql" | tail -40 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+            echo "::error title=SQL Server-test::$msg"
+          fi
           exit $status
 
   image:

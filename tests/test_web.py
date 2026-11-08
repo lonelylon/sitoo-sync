@@ -644,6 +644,7 @@ class ReportPageTests(ReportBase):
         status, _, html = self.c.req("GET", "/bokforing/worldline?manad=2026-09")
         self.assertEqual(status, 200)
         self.assertIn('enctype="multipart/form-data"', html)
+        self.assertIn('href="https://reports.bambora.com/merchants/"', html)
         self.assertIn("Ej uppladdad", html)                  # z-rapport med kort men ingen Worldline-data
         self.assertIn("Andra butiken", html)
         csrf = self.c.csrf("/bokforing/worldline")
